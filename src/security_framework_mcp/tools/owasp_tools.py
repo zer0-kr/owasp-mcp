@@ -47,6 +47,9 @@ _SOURCE_TABLES: dict[str, str] = {
     "nist_controls": "nist_controls",
     "nist_csf": "nist_csf",
     "nist_glossary": "nist_glossary",
+    "nist_publications": "nist_publications",
+    "nist_cmvp": "nist_cmvp",
+    "nist_nice": "nist_nice",
 }
 
 _SOURCE_LABELS: dict[str, str] = {
@@ -64,6 +67,9 @@ _SOURCE_LABELS: dict[str, str] = {
     "nist_controls": "NIST SP 800-53",
     "nist_csf": "NIST CSF 2.0",
     "nist_glossary": "NIST Glossary",
+    "nist_publications": "NIST Publications",
+    "nist_cmvp": "NIST CMVP",
+    "nist_nice": "NICE Work Roles",
 }
 
 
@@ -127,6 +133,9 @@ _FORMATTERS = {
     "nist_controls": lambda row: f"**{row.get('id', '?')}** {row.get('title', '')} [{row.get('baselines', '')}]",
     "nist_csf": lambda row: f"**{row.get('id', '?')}** [{row.get('level', '')}] {row.get('title', '')}",
     "nist_glossary": lambda row: f"**{row.get('term', '?')}** — {row.get('definition', '')[:150]}",
+    "nist_publications": lambda row: f"**{row.get('id', '?')}** — {row.get('title', '')[:120]}",
+    "nist_cmvp": lambda row: f"**Cert #{row.get('cert_number', '?')}** {row.get('vendor', '')} {row.get('module_name', '')} (Level {row.get('fips_level', '?')})",
+    "nist_nice": lambda row: f"**{row.get('id', '?')}** {row.get('name', '')} [{row.get('category', '')}]",
 }
 
 
@@ -825,8 +834,8 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
     async def search_nist(
         query: Annotated[str, Field(description="Search keywords", max_length=500)],
         source: Annotated[
-            Literal["controls", "csf", "glossary", "all"] | None,
-            Field(description="Filter: controls (SP 800-53), csf (CSF 2.0), glossary, or all"),
+            Literal["controls", "csf", "glossary", "publications", "cmvp", "nice", "all"] | None,
+            Field(description="Filter: controls, csf, glossary, publications, cmvp, nice, or all"),
         ] = "all",
         limit: Annotated[int, Field(ge=1, le=50)] = 10,
     ) -> str:
@@ -837,6 +846,9 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
             "controls": ("nist_controls", "NIST SP 800-53"),
             "csf": ("nist_csf", "NIST CSF 2.0"),
             "glossary": ("nist_glossary", "NIST Glossary"),
+            "publications": ("nist_publications", "NIST Publications"),
+            "cmvp": ("nist_cmvp", "NIST CMVP"),
+            "nice": ("nist_nice", "NICE Work Roles"),
         }
         sources = list(source_map.items()) if source == "all" else [(source, source_map[source])]
 
@@ -959,9 +971,119 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
 
         return f"# {record['term']}\n\n{record['definition']}\n\n_Source: {record.get('source', 'N/A')}_"
 
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def get_nist_publication(
+        id: Annotated[str | None, Field(description="Publication ID, e.g. 'SP 800-53'. Omit to list all.")] = None,
+        series: Annotated[str | None, Field(description="Filter by series: SP, FIPS, IR, CSWP")] = None,
+        query: Annotated[str | None, Field(description="Search keywords", max_length=500)] = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 20,
+    ) -> str:
+        """Search or browse NIST cybersecurity publications (SP 800, FIPS, IR, CSWP series)."""
+        db_path = await index_mgr.ensure_index()
 
-        limit_map = {"basic": 8, "standard": 15, "comprehensive": 30}
-        per_section = limit_map[level]
+        if id:
+            record = db.get_by_id(db_path, "nist_publications", "id", id.strip())
+            if record is None:
+                try:
+                    results, _ = db.search_fts(db_path, "nist_publications", id.strip(), limit=5)
+                    if results:
+                        lines = [f"## NIST Publications matching '{id}'\n"]
+                        for r in results:
+                            lines.append(f"- **{r['id']}** — {r['title']}")
+                        return "\n".join(lines)
+                except Exception:
+                    pass
+                return f"Publication '{id}' not found."
+            lines = [
+                f"# {record['id']} — {record['title']}",
+                f"\n**Series:** {record.get('series', '')} | **Status:** {record.get('status', '')} | **Date:** {record.get('pub_date', '')}",
+            ]
+            if record.get("abstract"):
+                lines.append(f"\n## Abstract\n{record['abstract'][:3000]}")
+            if record.get("url"):
+                lines.append(f"\n**URL:** {record['url']}")
+            return "\n".join(lines)
+
+        if query:
+            filters: dict[str, Any] = {}
+            if series:
+                filters["series"] = series.upper()
+            try:
+                results, total = db.search_fts(db_path, "nist_publications", query, filters=filters, limit=limit)
+            except Exception as exc:
+                raise ToolError(f"Publication search failed: {exc}") from exc
+        else:
+            filters = {}
+            if series:
+                filters["series"] = series.upper()
+            results, total = db.get_all(db_path, "nist_publications", filters=filters, limit=limit)
+
+        if not results:
+            return "No NIST publications found matching your criteria."
+
+        lines = [f"## NIST Publications ({total} total)\n"]
+        for r in results:
+            lines.append(f"- **{r['id']}** [{r.get('series', '')}] — {r['title'][:100]}")
+        return "\n".join(lines)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def get_nist_cmvp(
+        query: Annotated[str | None, Field(description="Search vendor, module, or algorithm", max_length=500)] = None,
+        fips_level: Annotated[str | None, Field(description="Filter by FIPS level: 1, 2, or 3")] = None,
+        limit: Annotated[int, Field(ge=1, le=50)] = 20,
+    ) -> str:
+        """Search NIST CMVP (Cryptographic Module Validation Program) validated modules."""
+        db_path = await index_mgr.ensure_index()
+
+        if query:
+            filters: dict[str, Any] = {}
+            if fips_level:
+                filters["fips_level"] = fips_level
+            try:
+                results, total = db.search_fts(db_path, "nist_cmvp", query, filters=filters, limit=limit)
+            except Exception as exc:
+                raise ToolError(f"CMVP search failed: {exc}") from exc
+        else:
+            filters = {}
+            if fips_level:
+                filters["fips_level"] = fips_level
+            results, total = db.get_all(db_path, "nist_cmvp", filters=filters, limit=limit)
+
+        if not results:
+            return "No CMVP modules found."
+
+        lines = [f"## NIST CMVP Modules ({total} total)\n"]
+        for r in results:
+            lines.append(f"- **Cert #{r['cert_number']}** {r['vendor']} — {r['module_name']} (Level {r.get('fips_level', '?')}, {r.get('status', '')})")
+        return "\n".join(lines)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def get_nice_roles(
+        category: Annotated[str | None, Field(description="Filter by category, e.g. 'Protect and Defend'")] = None,
+        query: Annotated[str | None, Field(description="Search keywords", max_length=500)] = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+    ) -> str:
+        """Browse NICE Cybersecurity Workforce Framework work roles (SP 800-181)."""
+        db_path = await index_mgr.ensure_index()
+
+        if query:
+            try:
+                results, total = db.search_fts(db_path, "nist_nice", query, limit=limit)
+            except Exception as exc:
+                raise ToolError(f"NICE search failed: {exc}") from exc
+        else:
+            filters: dict[str, Any] = {}
+            if category:
+                filters["category"] = category
+            results, total = db.get_all(db_path, "nist_nice", filters=filters, limit=limit)
+
+        if not results:
+            return "No NICE work roles found."
+
+        lines = [f"## NICE Work Roles ({total} total)\n"]
+        for r in results:
+            lines.append(f"- **{r['id']}** {r['name']} [{r['category']}]\n  _{r.get('description', '')[:150]}_")
+        return "\n".join(lines)
 
         sections: list[str] = []
         item_count = 0
