@@ -42,6 +42,8 @@ _SOURCE_TABLES: dict[str, str] = {
     "llm_top10": "llm_top10",
     "proactive_controls": "proactive_controls",
     "masvs": "masvs",
+    "mcp_top10": "mcp_top10",
+    "cwes": "cwes",
 }
 
 _SOURCE_LABELS: dict[str, str] = {
@@ -54,6 +56,8 @@ _SOURCE_LABELS: dict[str, str] = {
     "llm_top10": "LLM Top 10 2025",
     "proactive_controls": "Proactive Controls 2024",
     "masvs": "MASVS",
+    "mcp_top10": "MCP Top 10 2025",
+    "cwes": "CWE Database",
 }
 
 
@@ -94,6 +98,14 @@ def _fmt_masvs(row: dict[str, Any]) -> str:
     return f"**{row.get('control_id', '?')}** [{row.get('category_name', '')}] — {row.get('statement', '')}"
 
 
+def _fmt_mcp_top10(row: dict[str, Any]) -> str:
+    return f"**{row.get('id', '?')}** {row.get('name', '')} — {row.get('description', '')[:150]}"
+
+
+def _fmt_cwe(row: dict[str, Any]) -> str:
+    return f"**{row.get('cwe_id', '?')}** {row.get('name', '')[:120]}"
+
+
 _FORMATTERS = {
     "projects": _fmt_project,
     "asvs": _fmt_asvs,
@@ -104,6 +116,8 @@ _FORMATTERS = {
     "llm_top10": _fmt_llm_top10,
     "proactive_controls": _fmt_proactive,
     "masvs": _fmt_masvs,
+    "mcp_top10": _fmt_mcp_top10,
+    "cwes": _fmt_cwe,
 }
 
 
@@ -1064,7 +1078,7 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
 
         has_llm = any(kw in sys_lower for kw in ["llm", "ai", "gpt", "claude", "model", "agent", "rag"])
         has_mcp = any(kw in sys_lower for kw in ["mcp", "model context protocol", "tool server"])
-        has_mobile = any(kw in sys_lower for kw in ["mobile", "ios", "android", "app"])
+        has_mobile = any(kw in sys_lower for kw in ["mobile", "ios", "android", "react native", "flutter", "swift", "kotlin"])
 
         if has_llm:
             sections.append("### AI/LLM-Specific Threats\n**Risk Level:** High\n"
@@ -1083,71 +1097,6 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
         if not sections:
             return f"{header}\nNo significant threats identified from the description. Provide more detail about components, data flows, and trust boundaries."
 
-        return header + "\n\n".join(sections)
-
-
-        limit_map = {"basic": 8, "standard": 15, "comprehensive": 30}
-        per_section = limit_map[level]
-
-        sections: list[str] = []
-        item_count = 0
-
-        if project_type in ("web", "full"):
-            items = []
-            for t10 in TOP10_2021[:per_section]:
-                items.append(f"- [ ] **{t10['id']}** {t10['name']}")
-                item_count += 1
-            sections.append("### Web Application — Top 10 2021\n" + "\n".join(items))
-
-            wstg_cats = ["WSTG-INFO", "WSTG-CONF", "WSTG-IDNT", "WSTG-ATHN", "WSTG-ATHZ", "WSTG-SESS", "WSTG-INPV", "WSTG-CLNT"]
-            wstg_items = []
-            for cat in wstg_cats[:per_section]:
-                results, _ = db.get_all(db_path, "wstg", filters={"category_id": cat}, limit=3)
-                for r in results:
-                    wstg_items.append(f"- [ ] **{r['test_id']}** {r['name']}")
-                    item_count += 1
-            if wstg_items:
-                sections.append("### Web — Testing (WSTG)\n" + "\n".join(wstg_items[:per_section]))
-
-        if project_type in ("api", "full"):
-            items = []
-            for a in API_TOP10_2023[:per_section]:
-                items.append(f"- [ ] **{a['id']}** {a['name']}")
-                item_count += 1
-            sections.append("### API Security — Top 10 2023\n" + "\n".join(items))
-
-        if project_type in ("mobile", "full"):
-            from owasp_mcp.collectors.masvs import MASVS_DATA
-            items = []
-            for cat_id, cat_name, controls in MASVS_DATA:
-                for ctrl_id, statement, _ in controls[:2 if level == "basic" else 99]:
-                    items.append(f"- [ ] **{ctrl_id}** {statement}")
-                    item_count += 1
-            sections.append("### Mobile Security — MASVS\n" + "\n".join(items[:per_section]))
-
-        if project_type in ("llm", "full"):
-            items = []
-            for l in LLM_TOP10_2025[:per_section]:
-                items.append(f"- [ ] **{l['id']}** {l['name']}")
-                item_count += 1
-            sections.append("### AI/LLM Security — Top 10 2025\n" + "\n".join(items))
-
-        asvs_items = []
-        asvs_level = "1" if level == "basic" else "2" if level == "standard" else "3"
-        results, _ = db.get_all(db_path, "asvs", filters={"level": asvs_level}, limit=per_section)
-        for r in results:
-            asvs_items.append(f"- [ ] **{r['req_id']}** {r['req_description'][:120]}")
-            item_count += 1
-        if asvs_items:
-            sections.append(f"### Verification — ASVS Level {asvs_level}\n" + "\n".join(asvs_items))
-
-        pc_items = []
-        for pc in PROACTIVE_CONTROLS_2024[:per_section]:
-            pc_items.append(f"- [ ] **{pc['id']}** {pc['name']}")
-            item_count += 1
-        sections.append("### Defensive Controls — Proactive Controls 2024\n" + "\n".join(pc_items))
-
-        header = f"## Security Checklist: {project_type.upper()} ({level})\n\n_{item_count} items_\n"
         return header + "\n\n".join(sections)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
