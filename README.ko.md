@@ -15,7 +15,7 @@
 
 ---
 
-**3,329개 보안 데이터**를 단일 MCP 인터페이스로 검색 — **OWASP** (Top 10, API/LLM/MCP Top 10, ASVS 5.0, WSTG, MASVS, Proactive Controls, 113+ Cheat Sheets, 418+ 프로젝트)와 **NIST** (SP 800-53 1,196개 컨트롤 + 53A 평가 + 53B 기준선, CSF 2.0, Privacy Framework 1.0, SP 800-37 RMF, 613개 출판물, CMVP, NICE) — **실시간 NVD/CVE**, 컴플라이언스 매핑, STRIDE 위협 모델링, MCP 보안 평가 포함.
+**3,329개 보안 데이터**를 단일 MCP 인터페이스로 검색 — **OWASP** (Top 10, API/LLM/MCP Top 10, ASVS 5.0, WSTG, MASVS, Proactive Controls, 113+ Cheat Sheets, 418+ 프로젝트)와 **NIST** (SP 800-53 1,196개 컨트롤 + 53A 평가 + 53B 기준선, CSF 2.0, PF 1.0, SP 800-37 RMF, 613개 출판물, CMVP, NICE) — **실시간 NVD/CVE**, 컴플라이언스 매핑, STRIDE 위협 모델링, MCP 보안 평가 포함.
 
 ## 빠른 시작
 
@@ -61,7 +61,7 @@ Claude Desktop (`claude_desktop_config.json`):
 |------|--------|------|
 | **SP 800-53 Rev. 5** | 1,196 | 보안/프라이버시 컨트롤 + **53A 평가 목표/방법** + **53B 기준선(LOW/MODERATE/HIGH)** |
 | **CSF 2.0** | 225 | 사이버보안 프레임워크 (6개 기능, 22개 카테고리, 197개 서브카테고리) |
-| **Privacy Framework 1.0** | 92 | 프라이버시 프레임워크 (5개 기능) |
+| **PF 1.0** | 92 | 프라이버시 프레임워크 (5개 기능) |
 | **SP 800-37 RMF** | 7 | 위험 관리 프레임워크 (7단계 프로세스) |
 | **출판물** | 613 | NIST 사이버보안 전체 출판물 (SP 800, FIPS, IR, CSWP) |
 | **용어사전** | 39 | 사이버보안 핵심 용어 |
@@ -96,7 +96,7 @@ Claude Desktop (`claude_desktop_config.json`):
 | `search_nist` | 8개 NIST 소스 통합 검색 |
 | `get_nist_control` | SP 800-53 컨트롤 조회 — 문장, 가이드, **53A 평가**, **53B 기준선** 필터 (LOW/MODERATE/HIGH), 패밀리 필터 |
 | `get_nist_csf` | CSF 2.0 기능/카테고리/서브카테고리 |
-| `get_nist_pf` | Privacy Framework 1.0 |
+| `get_nist_pf` | PF 1.0 |
 | `get_nist_rmf` | SP 800-37 RMF 단계별 태스크 |
 | `get_nist_publication` | 613개 출판물 검색/조회 |
 | `get_nist_glossary` | 사이버보안 용어 정의 |
@@ -145,7 +145,7 @@ Claude Desktop (`claude_desktop_config.json`):
 
 > SP 800-53 LOW 기준선에 포함된 컨트롤 목록
 
-> Privacy Framework 1.0의 Control-P 기능을 보여줘
+> PF 1.0의 Control-P 기능을 보여줘
 
 > SP 800-37 RMF의 ASSESS 단계를 설명해줘
 
