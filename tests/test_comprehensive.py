@@ -46,7 +46,7 @@ async def call_expect_error(client, name: str, args: dict | None = None) -> str 
 
 async def run_all():
     from fastmcp import Client
-    from owasp_mcp.server import mcp as server_mcp
+    from owasp_mcp.server import mcp as server_mcp, _register_resources, _register_prompts
     from owasp_mcp.config import get_config
     from owasp_mcp.index import IndexManager
     from owasp_mcp.tools.owasp_tools import register_tools
@@ -54,6 +54,8 @@ async def run_all():
     config = get_config()
     index_mgr = IndexManager(config)
     register_tools(server_mcp, index_mgr)
+    _register_resources(index_mgr)
+    _register_prompts()
 
     client = Client(server_mcp)
     async with client:
@@ -65,7 +67,7 @@ async def run_all():
 
         tools = await client.list_tools()
         tool_names = {t.name for t in tools}
-        ok("TC01 tool_count", len(tools) == 16, f"got {len(tools)}")
+        ok("TC01 tool_count", len(tools) == 17, f"got {len(tools)}")
 
         expected_tools = {
             "list_projects", "search_projects", "get_project",
@@ -73,7 +75,7 @@ async def run_all():
             "get_cheatsheet", "cross_reference",
             "update_database", "database_status",
             "get_api_top10", "get_llm_top10", "get_proactive_controls",
-            "get_masvs", "assess_stack",
+            "get_masvs", "assess_stack", "generate_checklist",
         }
         ok("TC02 all_tools_present", expected_tools == tool_names,
            f"missing={expected_tools - tool_names}, extra={tool_names - expected_tools}")
@@ -568,6 +570,50 @@ async def run_all():
 
         txt = await call_expect_error(client, "search_owasp", {"query": "NOT AND OR"})
         ok("TC152 xsearch_operators_only", txt is not None)
+
+        print("\n=== GROUP 22: generate_checklist ===")
+
+        txt = await call(client, "generate_checklist", {"project_type": "web", "level": "basic"})
+        ok("TC153 cl_web_basic", "- [ ]" in txt and "Top 10" in txt)
+        ok("TC154 cl_web_has_items", "items" in txt.lower())
+
+        txt = await call(client, "generate_checklist", {"project_type": "api", "level": "standard"})
+        ok("TC155 cl_api_standard", "API" in txt and "- [ ]" in txt)
+
+        txt = await call(client, "generate_checklist", {"project_type": "mobile", "level": "standard"})
+        ok("TC156 cl_mobile", "MASVS" in txt)
+
+        txt = await call(client, "generate_checklist", {"project_type": "llm", "level": "basic"})
+        ok("TC157 cl_llm", "LLM" in txt and "Prompt" in txt)
+
+        txt = await call(client, "generate_checklist", {"project_type": "full", "level": "comprehensive"})
+        ok("TC158 cl_full_comprehensive", txt.count("- [ ]") >= 50, f"items={txt.count('- [ ]')}")
+
+        txt = await call(client, "generate_checklist", {"project_type": "web", "level": "comprehensive"})
+        ok("TC159 cl_web_comprehensive", txt.count("- [ ]") > 0)
+
+        print("\n=== GROUP 23: Prompts ===")
+
+        prompts = await client.list_prompts()
+        prompt_names = {p.name for p in prompts}
+        ok("TC160 prompts_count", len(prompts) == 4, f"got {len(prompts)}")
+        ok("TC161 prompts_names", {"security_review", "threat_analysis", "compliance_check", "secure_code_review"} == prompt_names)
+
+        for p in prompts:
+            ok(f"TC162_{p.name}_has_desc", p.description is not None and len(p.description) > 10)
+
+        print("\n=== GROUP 24: Resources ===")
+
+        resources = await client.list_resources()
+        ok("TC166 resources_count", len(resources) >= 6, f"got {len(resources)}")
+
+        resource_uris = {str(r.uri) for r in resources}
+        ok("TC167 has_about", "owasp://about" in resource_uris)
+        ok("TC168 has_stats", "owasp://stats" in resource_uris)
+        ok("TC169 has_top10", "owasp://top10/2021" in resource_uris)
+        ok("TC170 has_api_top10", "owasp://api-top10/2023" in resource_uris)
+        ok("TC171 has_llm_top10", "owasp://llm-top10/2025" in resource_uris)
+        ok("TC172 has_proactive", "owasp://proactive-controls/2024" in resource_uris)
 
     # ============================================================
     # SUMMARY
