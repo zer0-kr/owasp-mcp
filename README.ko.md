@@ -15,7 +15,7 @@
 
 ---
 
-**3,329개 보안 데이터**를 단일 MCP 인터페이스로 검색 — **OWASP** (Top 10, API/LLM/MCP Top 10, ASVS 5.0, WSTG, MASVS, Proactive Controls, 113+ Cheat Sheets, 418+ 프로젝트)와 **NIST** (SP 800-53 1,196개 컨트롤 + 53A 평가 + 53B 기준선, CSF 2.0, PF 1.0, SP 800-37 RMF, 613개 출판물, CMVP, NICE) — **실시간 NVD/CVE**, 컴플라이언스 매핑, STRIDE 위협 모델링, MCP 보안 평가 포함.
+**3,439개 보안 데이터**를 단일 MCP 인터페이스로 검색 — **OWASP** (Top 10, API/LLM/MCP Top 10, ASVS 5.0, WSTG, MASVS, Proactive Controls, 113+ Cheat Sheets, 418+ 프로젝트)와 **NIST** (SP 800-53 1,196개 컨트롤 + 53A 평가 + 53B 기준선, CSF 2.0, PF 1.0, SP 800-37 RMF, 613개 출판물, CMVP, NICE) — **실시간 NVD/CVE**, 컴플라이언스 매핑, STRIDE 위협 모델링, MCP 보안 평가 포함.
 
 ## 빠른 시작
 

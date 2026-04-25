@@ -217,10 +217,12 @@ def main() -> None:
     index_mgr = IndexManager(config)
 
     from security_framework_mcp.nvd import NVDClient
+    from security_framework_mcp.kev import KEVClient
     nvd_api_key = os.environ.get("NVD_API_KEY")
     nvd_client = NVDClient(api_key=nvd_api_key)
+    kev_client = KEVClient(cache_dir=config.data_dir)
 
-    register_tools(mcp, index_mgr, nvd_client=nvd_client)
+    register_tools(mcp, index_mgr, nvd_client=nvd_client, kev_client=kev_client)
     _register_resources(index_mgr)
     _register_prompts()
 

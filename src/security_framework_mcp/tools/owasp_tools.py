@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from fastmcp import FastMCP
     from security_framework_mcp.index import IndexManager
     from security_framework_mcp.nvd import NVDClient
+    from security_framework_mcp.kev import KEVClient
 
 log = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ _FORMATTERS = {
 }
 
 
-def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDClient | None" = None) -> None:
+def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDClient | None" = None, kev_client: "KEVClient | None" = None) -> None:
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     async def update_database() -> str:
@@ -775,21 +776,156 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def generate_checklist(
-        project_type: Annotated[
-            Literal["web", "api", "mobile", "llm", "full"],
-            Field(description="Project type: web, api, mobile, llm, or full (all combined)"),
-        ],
-        level: Annotated[
-            Literal["basic", "standard", "comprehensive"],
-            Field(description="Checklist depth: basic (~20 items), standard (~40), comprehensive (~60+)"),
-        ] = "standard",
+        project_type: Annotated[Literal["web", "api", "mobile", "llm", "full"], Field(description="Project type")],
+        level: Annotated[Literal["basic", "standard", "comprehensive"], Field(description="Depth")] = "standard",
     ) -> str:
         """Generate a security testing checklist based on project type and depth level."""
         db_path = await index_mgr.ensure_index()
         limit_map = {"basic": 8, "standard": 15, "comprehensive": 30}
-        per_section = limit_map[level]
-        sections: list[str] = []
-        item_count = 0
+        per = limit_map[level]
+        secs: list[str] = []
+        cnt = 0
+        if project_type in ("web", "full"):
+            items = [f"- [ ] **{t['id']}** {t['name']}" for t in TOP10_2021[:per]]
+            cnt += len(items)
+            secs.append("### Web — Top 10 2021\n" + "\n".join(items))
+        if project_type in ("api", "full"):
+            items = [f"- [ ] **{a['id']}** {a['name']}" for a in API_TOP10_2023[:per]]
+            cnt += len(items)
+            secs.append("### API — Top 10 2023\n" + "\n".join(items))
+        if project_type in ("mobile", "full"):
+            from security_framework_mcp.collectors.masvs import MASVS_DATA
+            items = []
+            for _, _, controls in MASVS_DATA:
+                for cid, stmt, _ in controls[:2 if level == "basic" else 99]:
+                    items.append(f"- [ ] **{cid}** {stmt}")
+                    cnt += 1
+            secs.append("### Mobile — MASVS\n" + "\n".join(items[:per]))
+        if project_type in ("llm", "full"):
+            items = [f"- [ ] **{l['id']}** {l['name']}" for l in LLM_TOP10_2025[:per]]
+            cnt += len(items)
+            secs.append("### LLM — Top 10 2025\n" + "\n".join(items))
+        asvs_lvl = "1" if level == "basic" else "2" if level == "standard" else "3"
+        results, _ = db.get_all(db_path, "asvs", filters={"level": asvs_lvl}, limit=per)
+        a_items = [f"- [ ] **{r['req_id']}** {r['req_description'][:120]}" for r in results]
+        cnt += len(a_items)
+        if a_items:
+            secs.append(f"### ASVS Level {asvs_lvl}\n" + "\n".join(a_items))
+        pc = [f"- [ ] **{p['id']}** {p['name']}" for p in PROACTIVE_CONTROLS_2024[:per]]
+        cnt += len(pc)
+        secs.append("### Proactive Controls\n" + "\n".join(pc))
+        return f"## Checklist: {project_type.upper()} ({level})\n\n_{cnt} items_\n" + "\n\n".join(secs)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True))
+    async def read_publication(
+        publication_id: Annotated[str, Field(description="Publication ID, e.g. 'SP 800-53'", max_length=100)],
+        pages: Annotated[str | None, Field(description="Page range, e.g. '1-5'. Omit for table of contents.")] = None,
+    ) -> str:
+        """Download and read a NIST publication PDF. Returns table of contents or specific pages as Markdown."""
+        db_path = await index_mgr.ensure_index()
+        from security_framework_mcp.convert import download_file, convert_pdf_to_markdown, get_pdf_toc
+
+        record = db.get_by_id(db_path, "nist_publications", "id", publication_id.strip())
+        if record is None:
+            return f"Publication '{publication_id}' not found. Use get_nist_publication to search."
+
+        url = record.get("url", "")
+        if not url:
+            return f"No URL available for '{publication_id}'."
+
+        pdf_url = url
+        if "csrc.nist.gov" in url and not url.endswith(".pdf"):
+            pdf_url = url
+
+        doc_dir = index_mgr._config.data_dir / "docs" / publication_id.replace(" ", "_")
+        filename = publication_id.replace(" ", "_").replace("/", "_") + ".pdf"
+        path = doc_dir / filename
+
+        try:
+            await download_file(pdf_url, path)
+        except Exception as exc:
+            raise ToolError(f"Download failed: {exc}") from exc
+
+        try:
+            if pages:
+                md = convert_pdf_to_markdown(path, pages=pages)
+            else:
+                md = get_pdf_toc(path)
+                md += "\n\n_Use `pages` parameter (e.g. pages='1-5') to read specific content._"
+        except Exception as exc:
+            raise ToolError(f"PDF conversion failed: {exc}") from exc
+
+        return f"# {record.get('title', publication_id)}\n\n{md}"
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def get_nist_mapping(
+        source_id: Annotated[str | None, Field(description="Source ID, e.g. 'PR.AA' (CSF category)")] = None,
+        target_id: Annotated[str | None, Field(description="Target ID, e.g. 'AC-1' (SP 800-53 control)")] = None,
+    ) -> str:
+        """Look up CSF 2.0 ↔ SP 800-53 framework mappings."""
+        db_path = await index_mgr.ensure_index()
+
+        if not source_id and not target_id:
+            raise ToolError("Provide source_id (CSF category) or target_id (800-53 control)")
+
+        conn = db.get_connection(db_path)
+        try:
+            if source_id:
+                rows = conn.execute(
+                    "SELECT * FROM nist_mappings WHERE source_id = ? OR source_id LIKE ?",
+                    (source_id.upper(), f"{source_id.upper()}%"),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM nist_mappings WHERE lower(target_id) = lower(?)",
+                    (target_id,),
+                ).fetchall()
+            results = [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+        if not results:
+            return f"No mappings found for '{source_id or target_id}'."
+
+        lines = [f"## Framework Mappings\n"]
+        for r in results:
+            lines.append(f"- **{r['source_framework']} {r['source_id']}** → **{r['target_framework']} {r['target_id']}** ({r.get('relationship', '')})")
+        return "\n".join(lines)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True))
+    async def search_kev(
+        cve_id: Annotated[str | None, Field(description="Check if a specific CVE is in CISA KEV")] = None,
+        count_only: Annotated[bool, Field(description="Just return total KEV count")] = False,
+    ) -> str:
+        """Search CISA Known Exploited Vulnerabilities (KEV) catalog."""
+        if kev_client is None:
+            raise ToolError("KEV client not configured")
+
+        if count_only:
+            total = await kev_client.get_kev_count()
+            return f"CISA KEV catalog contains **{total}** known exploited vulnerabilities."
+
+        if not cve_id:
+            raise ToolError("Provide cve_id or set count_only=true")
+
+        entry = await kev_client.get_kev_entry(cve_id)
+        if entry is None:
+            return f"**{cve_id.upper()}** is NOT in the CISA KEV catalog."
+
+        lines = [
+            f"# {entry.get('cveID', cve_id)} — CISA KEV Entry",
+            "",
+            f"**Vendor/Product:** {entry.get('vendorProject', '')} — {entry.get('product', '')}",
+            f"**Vulnerability:** {entry.get('vulnerabilityName', '')}",
+            f"**Date Added:** {entry.get('dateAdded', '')}",
+            f"**Due Date:** {entry.get('dueDate', '')}",
+            f"**Required Action:** {entry.get('requiredAction', '')}",
+            f"**Known Ransomware Use:** {entry.get('knownRansomwareCampaignUse', 'Unknown')}",
+        ]
+        if entry.get("shortDescription"):
+            lines.append(f"\n## Description\n{entry['shortDescription']}")
+        return "\n".join(lines)
+
 
         if project_type in ("web", "full"):
             items = [f"- [ ] **{t['id']}** {t['name']}" for t in TOP10_2021[:per_section]]

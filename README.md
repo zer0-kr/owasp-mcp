@@ -17,7 +17,7 @@
 
 ---
 
-Search and query **3,329 security data points** through a single MCP interface — **OWASP** (Top 10, API/LLM/MCP Top 10, ASVS 5.0, WSTG, MASVS, Proactive Controls, 113+ Cheat Sheets, 418+ projects) and **NIST** (1,196 SP 800-53 controls with SP 800-53A assessments and SP 800-53B baselines, CSF 2.0, Privacy Framework 1.0, SP 800-37 RMF, 613 publications, CMVP, NICE) — with **live NVD/CVE**, compliance mapping, STRIDE threat modeling, and MCP security assessment.
+Search and query **3,439 security data points** through a single MCP interface — **OWASP** (Top 10, API/LLM/MCP Top 10, ASVS 5.0, WSTG, MASVS, Proactive Controls, 113+ Cheat Sheets, 418+ projects) and **NIST** (1,196 SP 800-53 controls with SP 800-53A assessments and SP 800-53B baselines, CSF 2.0, Privacy Framework 1.0, SP 800-37 RMF, 613 publications, CMVP, NICE) — with **live NVD/CVE**, compliance mapping, STRIDE threat modeling, and MCP security assessment.
 
 ## Quick Start
 
@@ -158,7 +158,7 @@ Claude Desktop (`claude_desktop_config.json`):
                │ stdio
 ┌──────────────▼──────────────────┐
 │   security-framework-mcp        │
-│  33 tools · 4 prompts · 6 rsrc │
+│  36 tools · 4 prompts · 6 rsrc │
 ├──────────────┬──────────────────┤
 │  SQLite FTS5 │  Live APIs       │
 │  (~6.2MB)    │  NVD CVE 2.0    │
