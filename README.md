@@ -13,7 +13,7 @@
 
 ---
 
-Search and query **418+ OWASP projects** across all maturity levels, **345 ASVS requirements**, **111 WSTG test cases**, **113+ Cheat Sheets**, **Top 10 2021**, **API Security Top 10 2023**, **LLM Top 10 2025**, **Proactive Controls 2024**, and **MASVS** — all through a single MCP interface with intelligent stack-based security assessment.
+Search and query **1,088+ security data points** through a single MCP interface — **418+ OWASP projects**, **345 ASVS requirements**, **111 WSTG test cases**, **113+ Cheat Sheets**, **Top 10 2021**, **API Security Top 10 2023**, **LLM Top 10 2025**, **Proactive Controls 2024**, **MASVS**, and **38 CWE entries** with cross-references and compliance mapping.
 
 ## Why owasp-mcp?
 
@@ -21,8 +21,12 @@ Individual OWASP resources are scattered across dozens of repositories with diff
 
 - Ask "What are the ASVS requirements for authentication?" and get structured results instantly
 - Cross-reference a CWE with Top 10 categories, ASVS requirements, and WSTG test cases
+- Look up any CWE by ID and see all OWASP mappings automatically
+- Map ASVS requirements to PCI-DSS, ISO 27001, and NIST 800-53 for compliance
+- Generate security checklists tailored to your project type and depth
+- Assess any tech stack and get relevant OWASP security recommendations
+- Use pre-built prompt templates for guided security reviews and threat analysis
 - Browse all 418+ OWASP projects including Lab and Incubator — not just the Flagship ones
-- Pull full Cheat Sheet content on demand without leaving your workflow
 
 No API keys required. All data is fetched from public OWASP GitHub repositories.
 
@@ -104,11 +108,12 @@ docker run --rm -i ghcr.io/zer0-kr/owasp-mcp
 | **LLM Top 10 2025** | 10 | [OWASP GenAI](https://genai.owasp.org/llm-top-10/) |
 | **Proactive Controls 2024** | 10 | [OWASP Proactive Controls](https://owasp.org/www-project-proactive-controls/) |
 | **MASVS** | 23 | [OWASP/owasp-masvs](https://github.com/OWASP/owasp-masvs) |
+| **CWE Database** | 38 | [MITRE CWE](https://cwe.mitre.org/) |
 | **Cheat Sheets** | 113+ | [OWASP/CheatSheetSeries](https://github.com/OWASP/CheatSheetSeries) |
 
 Project levels: **Flagship** (15) · **Production** (12+) · **Lab** (36) · **Incubator** (206+) · Retired
 
-## Tools Reference
+## Tools Reference (19 tools)
 
 ### Project Discovery
 
@@ -135,9 +140,12 @@ Project levels: **Flagship** (15) · **Production** (12+) · **Lab** (36) · **I
 
 | Tool | Description |
 |------|-------------|
-| `search_owasp` | Search across **all** data sources at once — 9 sources unified |
-| `cross_reference` | Map a `cwe` ID (e.g., CWE-79) to Top 10 categories, ASVS requirements, and WSTG tests |
+| `search_owasp` | Search across **all 10 data sources** at once |
+| `cross_reference` | Map a `cwe` ID to Top 10 categories, ASVS requirements, and WSTG tests |
+| `get_cwe` | Look up any CWE by ID — description, MITRE link, and auto OWASP cross-references across Top 10, API Top 10, and LLM Top 10 |
+| `compliance_map` | Map ASVS chapters to **PCI-DSS 4.0**, **ISO 27001:2022**, and **NIST SP 800-53 Rev. 5** |
 | `assess_stack` | Input a tech stack (e.g., "React, Node.js, PostgreSQL") and get tailored security recommendations |
+| `generate_checklist` | Generate security testing checklists by project type (web/api/mobile/llm/full) and depth (basic/standard/comprehensive) |
 
 ### Database Management
 
@@ -145,6 +153,30 @@ Project levels: **Flagship** (15) · **Production** (12+) · **Lab** (36) · **I
 |------|-------------|
 | `update_database` | Rebuild the local index from upstream OWASP sources |
 | `database_status` | Show database availability, build time, size, and path |
+
+## Prompt Templates (4 prompts)
+
+Pre-built security workflows that guide the LLM through structured analysis using OWASP tools:
+
+| Prompt | Description |
+|--------|-------------|
+| `security_review` | Guided security review — analyzes a system against OWASP Top 10, ASVS, WSTG, and Cheat Sheets |
+| `threat_analysis` | Threat analysis workflow — identifies threats, maps to CWEs, and recommends test cases |
+| `compliance_check` | Compliance assessment — maps system requirements to ASVS with testing procedures |
+| `secure_code_review` | Code-focused security review — identifies vulnerabilities with CWE IDs and secure alternatives |
+
+## Resources (6 URIs)
+
+Structured data endpoints that MCP clients can read for context:
+
+| URI | Description |
+|-----|-------------|
+| `owasp://about` | Server version, database status, available tools and prompts |
+| `owasp://stats` | Database statistics — record counts per source, DB size, build time |
+| `owasp://top10/2021` | Full OWASP Top 10 2021 content |
+| `owasp://api-top10/2023` | Full API Security Top 10 2023 content |
+| `owasp://llm-top10/2025` | Full LLM Top 10 2025 content |
+| `owasp://proactive-controls/2024` | Full Proactive Controls 2024 content |
 
 ## Usage Examples
 
@@ -157,7 +189,11 @@ Project levels: **Flagship** (15) · **Production** (12+) · **Lab** (36) · **I
 
 > What WSTG tests cover SQL injection?
 
-> Cross-reference CWE-79 with OWASP standards
+> Look up CWE-79 and show me all OWASP references
+
+> Map ASVS chapter V4 to PCI-DSS and ISO 27001
+
+> Cross-reference CWE-918 with OWASP standards
 
 > Get the OWASP Top 10 item for A03:2021
 
@@ -168,6 +204,8 @@ Project levels: **Flagship** (15) · **Production** (12+) · **Lab** (36) · **I
 > What MASVS controls apply to cryptography?
 
 > Assess the security of my stack: React, Node.js, PostgreSQL, REST API
+
+> Generate a comprehensive security checklist for a web API project
 
 > What Proactive Controls should I implement for access control?
 
@@ -191,15 +229,15 @@ Project levels: **Flagship** (15) · **Production** (12+) · **Lab** (36) · **I
                │ stdio
 ┌──────────────▼──────────────────┐
 │         owasp-mcp server        │
-│  FastMCP · 16 tools · 1 resource│
+│  19 tools · 4 prompts · 6 rsrc │
 ├─────────────────────────────────┤
 │         SQLite + FTS5           │
-│  Full-text search index (~835KB)│
+│  Full-text search index (~885KB)│
 ├─────────────────────────────────┤
-│         Collectors              │
-│  projects · asvs · wstg · top10 │
+│         Collectors (10)         │
+│  projects · asvs · wstg · top10│
 │  api_top10 · llm_top10 · masvs │
-│  proactive_controls · cheatsht │
+│  proactive · cheatsheets · cwes│
 └──────────────┬──────────────────┘
                │ httpx (on build)
 ┌──────────────▼──────────────────┐
@@ -215,7 +253,7 @@ git clone https://github.com/zer0-kr/owasp-mcp.git
 cd owasp-mcp
 pip install -e ".[dev]"
 
-# Run tests (91 test cases)
+# Run tests (186 test cases)
 python tests/test_comprehensive.py
 
 # Run server locally
@@ -226,7 +264,7 @@ python -m owasp_mcp
 
 ```
 src/owasp_mcp/
-├── server.py              # FastMCP entry point
+├── server.py              # FastMCP entry point + prompts + resources
 ├── config.py              # Environment-based configuration
 ├── db.py                  # SQLite FTS5 query helpers
 ├── index.py               # IndexManager — builds DB from collectors
@@ -239,9 +277,10 @@ src/owasp_mcp/
 │   ├── llm_top10.py       # LLM Top 10 2025
 │   ├── proactive_controls.py  # Proactive Controls 2024
 │   ├── masvs.py           # MASVS mobile security
+│   ├── cwe_data.py        # CWE database (38 entries)
 │   └── cheatsheets.py     # Cheat Sheet index + on-demand content
 └── tools/
-    └── owasp_tools.py     # All MCP tool definitions
+    └── owasp_tools.py     # All 19 MCP tool definitions
 ```
 
 ## Contributing
