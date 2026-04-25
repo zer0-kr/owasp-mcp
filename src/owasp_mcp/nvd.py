@@ -16,6 +16,12 @@ class NVDClient:
         self.api_key = api_key
         self._last_request = 0.0
         self._min_interval = 0.6 if api_key else 6.0
+        self._client: httpx.AsyncClient | None = None
+
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(follow_redirects=True, timeout=30)
+        return self._client
 
     async def _get(self, endpoint: str, params: dict) -> dict:
         now = time.monotonic()
@@ -27,16 +33,15 @@ class NVDClient:
         if self.api_key:
             headers["apiKey"] = self.api_key
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            resp = await client.get(
-                f"{self.BASE}/{endpoint}",
-                params=params,
-                headers=headers,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            self._last_request = time.monotonic()
-            return resp.json()
+        client = await self._ensure_client()
+        resp = await client.get(
+            f"{self.BASE}/{endpoint}",
+            params=params,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        self._last_request = time.monotonic()
+        return resp.json()
 
     async def search_cves(
         self,

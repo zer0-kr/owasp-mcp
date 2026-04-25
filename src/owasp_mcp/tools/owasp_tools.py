@@ -495,8 +495,8 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
                     for row in asvs_results:
                         lines.append(f"- {_fmt_asvs(row)}")
                     sections.append("\n".join(lines))
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("ASVS cross-reference search failed: %s", exc)
 
             try:
                 wstg_results, _ = db.search_fts(db_path, "wstg", cwe_num, limit=10)
@@ -520,8 +520,8 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
                     for row in wstg_results:
                         lines.append(f"- {_fmt_wstg(row)}")
                     sections.append("\n".join(lines))
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("WSTG cross-reference search failed: %s", exc)
 
         if top10_id:
             id_upper = top10_id.strip().upper()
@@ -738,8 +738,8 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
                 if cs_results:
                     names = [r.get("name", "") for r in cs_results]
                     sections.append(f"### Related Cheat Sheets for \"{term}\"\n" + "\n".join(f"- {n}" for n in names))
-        except Exception:
-            pass
+        except Exception as exc:
+            log.debug("Cheat sheet search in assess_stack failed: %s", exc)
 
         header = f"## Security Assessment: {stack}\n"
         if not sections:
@@ -1016,6 +1016,7 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
         lines.append("2. Implement authentication (MCP07) and audit logging (MCP08) as baseline controls")
         lines.append("3. Pin and verify all tool/plugin dependencies (MCP03, MCP04)")
         lines.append("4. Scope agent permissions to minimum required (MCP02)")
+        lines.append("\n_Note: This assessment is based on keyword analysis of your description. For a comprehensive review, examine each MCP Top 10 item individually using `get_mcp_top10`._")
 
         return "\n".join(lines)
 
@@ -1097,7 +1098,8 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
         if not sections:
             return f"{header}\nNo significant threats identified from the description. Provide more detail about components, data flows, and trust boundaries."
 
-        return header + "\n\n".join(sections)
+        footer = "\n\n_Note: This threat model is based on keyword analysis. For comprehensive STRIDE analysis, provide detailed architecture documentation and review each category with domain-specific tools._"
+        return header + "\n\n".join(sections) + footer
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def get_cwe(
