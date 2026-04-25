@@ -46,19 +46,23 @@ def _tokenize_query(query: str) -> list[str]:
 
 def sanitize_fts_query(query: str) -> str:
     _FTS_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
-    _NEEDS_QUOTING = re.compile(r"[-./\\:+*^~(){}]")
+    _SAFE_TOKEN = re.compile(r"^[a-zA-Z0-9_]+$")
 
     tokens = _tokenize_query(query)
     safe: list[str] = []
-    for tok in tokens:
+    for i, tok in enumerate(tokens):
         if tok.startswith('"'):
             safe.append(tok)
         elif tok.upper() in _FTS_OPERATORS:
+            if 0 < i < len(tokens) - 1:
+                safe.append(tok)
+            else:
+                safe.append(f'"{tok}"')
+        elif _SAFE_TOKEN.match(tok):
             safe.append(tok)
-        elif _NEEDS_QUOTING.search(tok):
-            safe.append(f'"{tok}"')
         else:
-            safe.append(tok)
+            escaped = tok.replace('"', '""')
+            safe.append(f'"{escaped}"')
     return " ".join(safe)
 
 
