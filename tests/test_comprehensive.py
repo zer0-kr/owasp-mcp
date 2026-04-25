@@ -678,6 +678,105 @@ async def run_all():
         txt = await call(client, "get_mcp_top10", {})
         ok("TC206 mcp10_complete", all(f"MCP{str(i).zfill(2)}:2025" in txt for i in range(1, 11)))
 
+        print("\n=== GROUP 32: get_cwe coverage ===")
+
+        txt = await call(client, "get_cwe", {"id": "CWE-352"})
+        ok("TC207 cwe352_csrf", "Request Forgery" in txt)
+        ok("TC208 cwe352_top10", "A01:2021" in txt)
+
+        txt = await call(client, "get_cwe", {"id": "  cwe-200  "})
+        ok("TC209 cwe_whitespace_case", "Sensitive Information" in txt)
+
+        txt = await call(client, "get_cwe", {"id": "CWE-502"})
+        ok("TC210 cwe502_deser", "Deserialization" in txt)
+
+        txt = await call(client, "get_cwe", {"id": "400"})
+        ok("TC211 cwe_num_only", "Resource Consumption" in txt)
+
+        txt = await call(client, "get_cwe", {"id": "CWE-285"})
+        ok("TC212 cwe285_multi_map", "API Top 10" in txt)
+
+        print("\n=== GROUP 33: compliance_map coverage ===")
+
+        txt = await call(client, "compliance_map", {"framework": "nist-800-53"})
+        ok("TC213 cm_nist_all", txt.count("NIST") >= 10)
+
+        txt = await call(client, "compliance_map", {"framework": "pci-dss", "asvs_chapter": "V6"})
+        ok("TC214 cm_pci_v6", "PCI-DSS" in txt and "cryptography" in txt.lower())
+
+        txt = await call(client, "compliance_map", {"framework": "iso27001", "asvs_chapter": "V14"})
+        ok("TC215 cm_iso_v14", "ISO" in txt and "vulnerabilit" in txt.lower())
+
+        txt = await call(client, "compliance_map", {"framework": "all", "asvs_chapter": "V99"})
+        ok("TC216 cm_invalid_chapter", "No compliance" in txt)
+
+        print("\n=== GROUP 34: threat_model coverage ===")
+
+        txt = await call(client, "threat_model", {"system": "IoT sensor network with MQTT broker and cloud dashboard", "methodology": "stride"})
+        ok("TC217 tm_iot", "Spoofing" in txt or "Tampering" in txt)
+
+        txt = await call(client, "threat_model", {"system": "iOS app with biometric auth and local SQLite database", "methodology": "stride"})
+        ok("TC218 tm_mobile_detected", "Mobile" in txt)
+
+        txt = await call(client, "threat_model", {"system": "MCP server with tool execution capabilities", "methodology": "stride"})
+        ok("TC219 tm_mcp_detected", "MCP" in txt and "Tool Poisoning" in txt)
+
+        txt = await call(client, "threat_model", {"system": "LLM agent with RAG pipeline and tool calling via MCP", "methodology": "stride"})
+        ok("TC220 tm_llm_mcp_both", "LLM" in txt and "MCP" in txt)
+
+        txt = await call(client, "threat_model", {"system": "calculator", "methodology": "summary"})
+        ok("TC221 tm_summary_minimal", "Threat Model" in txt)
+
+        print("\n=== GROUP 35: assess_mcp_security coverage ===")
+
+        txt = await call(client, "assess_mcp_security", {"description": "Production MCP server with OAuth2, audit logging, pinned dependencies, scoped tokens, no shell access"})
+        ok("TC222 mcp_assess_secure", "No Indicators" in txt or "Potential Risks" in txt)
+
+        txt = await call(client, "assess_mcp_security", {"description": "Open public MCP server, anyone can connect, no authentication, shared context between all users, community plugins from marketplace"})
+        ok("TC223 mcp_assess_many_risks", txt.count("MCP0") >= 4)
+
+        txt = await call(client, "assess_mcp_security", {"description": "RAG pipeline with document retrieval, vector embeddings, persistent context across sessions"})
+        ok("TC224 mcp_assess_context", "MCP06" in txt or "MCP10" in txt)
+
+        print("\n=== GROUP 36: generate_checklist coverage ===")
+
+        txt = await call(client, "generate_checklist", {"project_type": "mobile", "level": "basic"})
+        ok("TC225 cl_mobile_basic", "MASVS" in txt and "- [ ]" in txt)
+
+        txt = await call(client, "generate_checklist", {"project_type": "full", "level": "basic"})
+        ok("TC226 cl_full_basic", "Web" in txt and "API" in txt and "Mobile" in txt and "LLM" in txt)
+
+        txt = await call(client, "generate_checklist", {"project_type": "api", "level": "comprehensive"})
+        ok("TC227 cl_api_comp", txt.count("- [ ]") > 20, f"items={txt.count('- [ ]')}")
+
+        print("\n=== GROUP 37: search_owasp expanded sources ===")
+
+        txt = await call(client, "search_owasp", {"query": "token mismanagement"})
+        ok("TC228 xsearch_mcp_top10", "MCP Top 10" in txt, txt[:300])
+
+        txt = await call(client, "search_owasp", {"query": "SQL Injection CWE"})
+        ok("TC229 xsearch_cwe_db", "CWE" in txt)
+
+        txt = await call(client, "search_owasp", {"query": "server side request forgery"})
+        ok("TC230 xsearch_ssrf_multi", txt.count("###") >= 2, f"sections={txt.count('###')}")
+
+        print("\n=== GROUP 38: db.py edge cases ===")
+
+        from owasp_mcp.db import sanitize_fts_query, _tokenize_query
+
+        ok("TC231 sanitize_empty", sanitize_fts_query("") == "")
+        ok("TC232 sanitize_spaces_only", sanitize_fts_query("   ") == "")
+        ok("TC233 sanitize_normal", sanitize_fts_query("hello world") == "hello world")
+        ok("TC234 sanitize_quotes", '"hello world"' in sanitize_fts_query('"hello world"'))
+        ok("TC235 sanitize_mixed", sanitize_fts_query("test NOT end") == "test NOT end")
+
+        tokens = _tokenize_query('')
+        ok("TC236 tokenize_empty", tokens == [])
+        tokens = _tokenize_query('"unclosed quote')
+        ok("TC237 tokenize_unclosed", len(tokens) == 1)
+        tokens = _tokenize_query('a "b c" d')
+        ok("TC238 tokenize_quoted_phrase", len(tokens) == 3 and tokens[1] == '"b c"')
+
     # ============================================================
     # SUMMARY
     # ============================================================
