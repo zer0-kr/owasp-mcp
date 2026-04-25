@@ -13,7 +13,7 @@
 
 ---
 
-Search and query **1,088+ security data points** through a single MCP interface — **418+ OWASP projects**, **345 ASVS requirements**, **111 WSTG test cases**, **113+ Cheat Sheets**, **Top 10 2021**, **API Security Top 10 2023**, **LLM Top 10 2025**, **Proactive Controls 2024**, **MASVS**, and **38 CWE entries** with cross-references and compliance mapping.
+Search and query **1,098+ security data points** through a single MCP interface — **418+ OWASP projects**, **345 ASVS requirements**, **111 WSTG test cases**, **113+ Cheat Sheets**, **Top 10 2021**, **API Security Top 10 2023**, **LLM Top 10 2025**, **MCP Top 10 2025**, **Proactive Controls 2024**, **MASVS**, **38 CWE entries**, and **live NVD/CVE data** — with cross-references, compliance mapping, threat modeling, and MCP security assessment.
 
 ## Why owasp-mcp?
 
@@ -23,12 +23,14 @@ Individual OWASP resources are scattered across dozens of repositories with diff
 - Cross-reference a CWE with Top 10 categories, ASVS requirements, and WSTG test cases
 - Look up any CWE by ID and see all OWASP mappings automatically
 - Map ASVS requirements to PCI-DSS, ISO 27001, and NIST 800-53 for compliance
+- Search live NVD for CVE vulnerabilities by keyword, CWE, or severity
+- Generate STRIDE-based threat models with OWASP mitigations
+- Assess MCP server deployments against the OWASP MCP Top 10
 - Generate security checklists tailored to your project type and depth
-- Assess any tech stack and get relevant OWASP security recommendations
 - Use pre-built prompt templates for guided security reviews and threat analysis
 - Browse all 418+ OWASP projects including Lab and Incubator — not just the Flagship ones
 
-No API keys required. All data is fetched from public OWASP GitHub repositories.
+No API keys required for local data. NVD API works without a key (rate-limited) or with an optional `NVD_API_KEY` for higher throughput.
 
 ## Quick Start
 
@@ -106,14 +108,16 @@ docker run --rm -i ghcr.io/zer0-kr/owasp-mcp
 | **Top 10 2021** | 10 | [OWASP/Top10](https://github.com/OWASP/Top10) |
 | **API Security Top 10 2023** | 10 | [OWASP API Security](https://owasp.org/API-Security/) |
 | **LLM Top 10 2025** | 10 | [OWASP GenAI](https://genai.owasp.org/llm-top-10/) |
+| **MCP Top 10 2025** | 10 | [OWASP MCP Top 10](https://owasp.org/www-project-mcp-top-10/) |
 | **Proactive Controls 2024** | 10 | [OWASP Proactive Controls](https://owasp.org/www-project-proactive-controls/) |
 | **MASVS** | 23 | [OWASP/owasp-masvs](https://github.com/OWASP/owasp-masvs) |
 | **CWE Database** | 38 | [MITRE CWE](https://cwe.mitre.org/) |
 | **Cheat Sheets** | 113+ | [OWASP/CheatSheetSeries](https://github.com/OWASP/CheatSheetSeries) |
+| **NVD/CVE** | Live | [NVD API 2.0](https://nvd.nist.gov/developers/vulnerabilities) |
 
 Project levels: **Flagship** (15) · **Production** (12+) · **Lab** (36) · **Incubator** (206+) · Retired
 
-## Tools Reference (19 tools)
+## Tools Reference (24 tools)
 
 ### Project Discovery
 
@@ -132,20 +136,30 @@ Project levels: **Flagship** (15) · **Production** (12+) · **Lab** (36) · **I
 | `get_top10` | Get Top 10 2021 items with descriptions and CWE mappings |
 | `get_api_top10` | Get API Security Top 10 2023 items with CWE mappings |
 | `get_llm_top10` | Get LLM Top 10 2025 items — AI/LLM-specific security risks |
+| `get_mcp_top10` | Get MCP Top 10 2025 — security risks specific to MCP server deployments |
 | `get_proactive_controls` | Get Proactive Controls 2024 — defensive measures for developers |
 | `get_masvs` | Query MASVS mobile security controls. Filter by `category` or `query` |
 | `get_cheatsheet` | Read a cheat sheet by `name` or list all 113+ available sheets |
+
+### Vulnerability & CWE Lookup
+
+| Tool | Description |
+|------|-------------|
+| `get_cwe` | Look up any CWE by ID — description, MITRE link, and auto OWASP cross-references across Top 10, API Top 10, and LLM Top 10 |
+| `search_cve` | Search the **live NVD** for CVEs by keyword, CWE ID, or CVSS severity |
+| `get_cve_detail` | Fetch full CVE details — CVSS score, description, weaknesses, references |
 
 ### Cross-Referencing & Assessment
 
 | Tool | Description |
 |------|-------------|
-| `search_owasp` | Search across **all 10 data sources** at once |
+| `search_owasp` | Search across **all 11 local data sources** at once |
 | `cross_reference` | Map a `cwe` ID to Top 10 categories, ASVS requirements, and WSTG tests |
-| `get_cwe` | Look up any CWE by ID — description, MITRE link, and auto OWASP cross-references across Top 10, API Top 10, and LLM Top 10 |
 | `compliance_map` | Map ASVS chapters to **PCI-DSS 4.0**, **ISO 27001:2022**, and **NIST SP 800-53 Rev. 5** |
 | `assess_stack` | Input a tech stack (e.g., "React, Node.js, PostgreSQL") and get tailored security recommendations |
 | `generate_checklist` | Generate security testing checklists by project type (web/api/mobile/llm/full) and depth (basic/standard/comprehensive) |
+| `assess_mcp_security` | Assess an MCP server deployment against the OWASP MCP Top 10 security risks |
+| `threat_model` | Generate a **STRIDE-based threat model** for any system with OWASP mitigations |
 
 ### Database Management
 
@@ -191,23 +205,25 @@ Structured data endpoints that MCP clients can read for context:
 
 > Look up CWE-79 and show me all OWASP references
 
+> Search NVD for critical log4j CVEs
+
 > Map ASVS chapter V4 to PCI-DSS and ISO 27001
 
 > Cross-reference CWE-918 with OWASP standards
 
-> Get the OWASP Top 10 item for A03:2021
+> Generate a STRIDE threat model for my e-commerce API
+
+> Assess my MCP server security: it uses shell exec, no auth, community plugins
+
+> What are the MCP Top 10 security risks?
 
 > What are the API Security Top 10 risks?
 
 > Show me the LLM Top 10 for prompt injection
 
-> What MASVS controls apply to cryptography?
-
 > Assess the security of my stack: React, Node.js, PostgreSQL, REST API
 
 > Generate a comprehensive security checklist for a web API project
-
-> What Proactive Controls should I implement for access control?
 
 > Show me the Input Validation cheat sheet
 ```
@@ -218,6 +234,7 @@ Structured data endpoints that MCP clients can read for context:
 |---------------------|---------|-------------|
 | `OWASP_MCP_DATA_DIR` | `~/.owasp-mcp` | Local database and cache directory |
 | `OWASP_MCP_UPDATE_INTERVAL` | `604800` (7 days) | Auto-refresh interval in seconds |
+| `NVD_API_KEY` | _(none)_ | Optional NVD API key for higher rate limits (50 req/30s vs 5 req/30s) |
 
 ## Architecture
 
@@ -229,19 +246,17 @@ Structured data endpoints that MCP clients can read for context:
                │ stdio
 ┌──────────────▼──────────────────┐
 │         owasp-mcp server        │
-│  19 tools · 4 prompts · 6 rsrc │
+│  24 tools · 4 prompts · 6 rsrc │
 ├─────────────────────────────────┤
 │         SQLite + FTS5           │
-│  Full-text search index (~885KB)│
-├─────────────────────────────────┤
-│         Collectors (10)         │
-│  projects · asvs · wstg · top10│
-│  api_top10 · llm_top10 · masvs │
-│  proactive · cheatsheets · cwes│
-└──────────────┬──────────────────┘
-               │ httpx (on build)
+│  Full-text search index (~930KB)│
+├──────────────┬──────────────────┤
+│  Collectors  │  Live APIs       │
+│  (11 local)  │  NVD CVE 2.0    │
+└──────────────┴──────────────────┘
+               │ httpx
 ┌──────────────▼──────────────────┐
-│     OWASP GitHub Repos          │
+│  OWASP GitHub · MITRE NVD      │
 │  Raw JSON/Markdown (public)     │
 └─────────────────────────────────┘
 ```
@@ -253,7 +268,7 @@ git clone https://github.com/zer0-kr/owasp-mcp.git
 cd owasp-mcp
 pip install -e ".[dev]"
 
-# Run tests (186 test cases)
+# Run tests (224 test cases across 38 groups)
 python tests/test_comprehensive.py
 
 # Run server locally
@@ -268,6 +283,7 @@ src/owasp_mcp/
 ├── config.py              # Environment-based configuration
 ├── db.py                  # SQLite FTS5 query helpers
 ├── index.py               # IndexManager — builds DB from collectors
+├── nvd.py                 # NVD API client (live CVE search)
 ├── collectors/
 │   ├── projects.py        # 418+ project metadata
 │   ├── asvs.py            # ASVS 5.0 flat JSON
@@ -275,12 +291,13 @@ src/owasp_mcp/
 │   ├── top10.py           # Top 10 2021 + CWE mappings
 │   ├── api_top10.py       # API Security Top 10 2023
 │   ├── llm_top10.py       # LLM Top 10 2025
+│   ├── mcp_top10.py       # MCP Top 10 2025
 │   ├── proactive_controls.py  # Proactive Controls 2024
 │   ├── masvs.py           # MASVS mobile security
 │   ├── cwe_data.py        # CWE database (38 entries)
 │   └── cheatsheets.py     # Cheat Sheet index + on-demand content
 └── tools/
-    └── owasp_tools.py     # All 19 MCP tool definitions
+    └── owasp_tools.py     # All 24 MCP tool definitions
 ```
 
 ## Contributing
