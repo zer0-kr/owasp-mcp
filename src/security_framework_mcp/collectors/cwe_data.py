@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import io
 import logging
 import sqlite3
+import defusedxml.ElementTree as ET
+import zipfile
+
+import httpx
 
 log = logging.getLogger(__name__)
+
+CWE_XML_URL = "https://cwe.mitre.org/data/xml/cwec_latest.xml.zip"
+_CWE_NS = {"cwe": "http://cwe.mitre.org/cwe-7"}
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS cwes (
@@ -64,12 +72,43 @@ CWE_DATABASE = [
     ("CWE-1104", "Use of Unmaintained Third Party Components", "The product relies on third-party components that are not actively maintained or supported."),
 ]
 
+_ALLOWED_ABSTRACTIONS = {"Base", "Variant"}
+
+
+def _download_cwe_entries() -> list[tuple[str, str, str, str]]:
+    resp = httpx.get(CWE_XML_URL, timeout=60, follow_redirects=True)
+    resp.raise_for_status()
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        xml_name = next(n for n in zf.namelist() if n.endswith(".xml"))
+        with zf.open(xml_name) as f:
+            tree = ET.parse(f)
+
+    rows: list[tuple[str, str, str, str]] = []
+    for weakness in tree.getroot().findall(".//cwe:Weakness", _CWE_NS):
+        if weakness.get("Status") == "Deprecated":
+            continue
+        if weakness.get("Abstraction") not in _ALLOWED_ABSTRACTIONS:
+            continue
+        wid = weakness.get("ID", "")
+        name = weakness.get("Name", "")
+        desc_el = weakness.find("cwe:Description", _CWE_NS)
+        description = desc_el.text.strip() if desc_el is not None and desc_el.text else ""
+        cwe_id = f"CWE-{wid}"
+        url = f"https://cwe.mitre.org/data/definitions/{wid}.html"
+        rows.append((cwe_id, name, description, url))
+    return rows
+
 
 def scrape_cwes(conn: sqlite3.Connection) -> int:
-    rows = [
-        (cwe_id, name, desc, f"https://cwe.mitre.org/data/definitions/{cwe_id.replace('CWE-', '')}.html")
-        for cwe_id, name, desc in CWE_DATABASE
-    ]
+    try:
+        rows = _download_cwe_entries()
+        log.info("Downloaded %d CWE entries from MITRE XML", len(rows))
+    except Exception:
+        log.warning("Failed to download CWE XML, using hardcoded fallback", exc_info=True)
+        rows = [
+            (cwe_id, name, desc, f"https://cwe.mitre.org/data/definitions/{cwe_id.replace('CWE-', '')}.html")
+            for cwe_id, name, desc in CWE_DATABASE
+        ]
     conn.executemany(
         "INSERT OR REPLACE INTO cwes (cwe_id, name, description, url) VALUES (?, ?, ?, ?)",
         rows,

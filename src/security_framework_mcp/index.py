@@ -192,6 +192,11 @@ class IndexManager:
             FTS_SQL as MAPPINGS_FTS,
             scrape_nist_mappings,
         )
+        from security_framework_mcp.collectors.capec_data import (
+            CREATE_TABLE_SQL as CAPEC_SQL,
+            FTS_SQL as CAPEC_FTS,
+            scrape_capec,
+        )
 
         output_dir = str(self._config.data_dir)
         os.makedirs(output_dir, exist_ok=True)
@@ -215,7 +220,7 @@ class IndexManager:
                 API_TOP10_SQL, LLM_TOP10_SQL, PROACTIVE_SQL, MASVS_SQL, CWE_SQL, MCP_TOP10_SQL,
                 NIST_CTRL_SQL, NIST_CSF_SQL, NIST_GLOSS_SQL,
                 NIST_PUB_SQL, NIST_CMVP_SQL, NIST_NICE_SQL,
-                NIST_PF_SQL, NIST_RMF_SQL, SYNONYMS_SQL, MAPPINGS_SQL, _META_SQL,
+                NIST_PF_SQL, NIST_RMF_SQL, SYNONYMS_SQL, MAPPINGS_SQL, CAPEC_SQL, _META_SQL,
             ]:
                 conn.executescript(sql)
 
@@ -224,7 +229,7 @@ class IndexManager:
                 API_TOP10_FTS, LLM_TOP10_FTS, PROACTIVE_FTS, MASVS_FTS, CWE_FTS, MCP_TOP10_FTS,
                 NIST_CTRL_FTS, NIST_CSF_FTS, NIST_GLOSS_FTS,
                 NIST_PUB_FTS, NIST_CMVP_FTS,
-                NIST_PF_FTS, NIST_RMF_FTS, MAPPINGS_FTS,
+                NIST_PF_FTS, NIST_RMF_FTS, MAPPINGS_FTS, CAPEC_FTS,
             ]:
                 conn.executescript(fts_sql)
 
@@ -250,6 +255,7 @@ class IndexManager:
                 ("nist_rmf", scrape_nist_rmf),
                 ("synonyms", scrape_synonyms),
                 ("nist_mappings", scrape_nist_mappings),
+                ("capec", scrape_capec),
             ]
 
             results: dict[str, int] = {}
@@ -266,7 +272,7 @@ class IndexManager:
                 "api_top10_fts", "llm_top10_fts", "proactive_controls_fts", "masvs_fts", "cwes_fts", "mcp_top10_fts",
                 "nist_controls_fts", "nist_csf_fts", "nist_glossary_fts",
                 "nist_publications_fts", "nist_cmvp_fts", "nist_nice_fts",
-                "nist_pf_fts", "nist_rmf_fts", "nist_mappings_fts",
+                "nist_pf_fts", "nist_rmf_fts", "nist_mappings_fts", "capec_fts",
             ]:
                 try:
                     conn.execute(f"INSERT INTO {fts}({fts}) VALUES('rebuild')")

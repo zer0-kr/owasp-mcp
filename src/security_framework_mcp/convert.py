@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -12,6 +13,9 @@ _ALLOWED_HOSTS = {"nvlpubs.nist.gov", "csrc.nist.gov", "doi.org", "dx.doi.org"}
 
 
 async def download_file(url: str, dest: Path) -> Path:
+    host = urlparse(url).hostname
+    if host and host not in _ALLOWED_HOSTS:
+        raise ValueError(f"Download blocked: host '{host}' not in allowed list")
     if dest.exists():
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)

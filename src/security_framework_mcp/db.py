@@ -52,7 +52,10 @@ def sanitize_fts_query(query: str) -> str:
     safe: list[str] = []
     for i, tok in enumerate(tokens):
         if tok.startswith('"'):
-            safe.append(tok)
+            if tok.endswith('"') and len(tok) >= 2:
+                safe.append(tok)
+            else:
+                safe.append(tok + '"')
         elif tok.upper() in _FTS_OPERATORS:
             if 0 < i < len(tokens) - 1:
                 safe.append(tok)

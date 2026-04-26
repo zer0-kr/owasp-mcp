@@ -68,7 +68,7 @@ class TestSanitizer:
 
     def test_embedded_quote_split(self):
         result = sanitize_fts_query('hello"world')
-        assert result == 'hello "world'
+        assert result == 'hello "world"'
 
     def test_underscore_safe(self):
         assert sanitize_fts_query("hello_world") == "hello_world"

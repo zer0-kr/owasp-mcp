@@ -45,26 +45,38 @@ def _register_resources(index_mgr: IndexManager) -> None:
             f"- **Database available:** {'Yes' if info['exists'] else 'No'}\n"
             f"- **Database built:** {info.get('built_at', 'never')}\n"
             f"- **Database path:** `{info['path']}`\n\n"
-            "## OWASP Tools (18)\n\n"
+            "## OWASP Tools (17)\n\n"
             "- `list_projects` / `search_projects` / `get_project` — 418+ projects\n"
-            "- `search_owasp` — Cross-source search (17 data sources)\n"
+            "- `search_owasp` — Cross-source search (20 data sources)\n"
             "- `get_top10` / `get_api_top10` / `get_llm_top10` / `get_mcp_top10`\n"
             "- `get_asvs` / `get_wstg` / `get_masvs`\n"
             "- `get_proactive_controls` / `get_cheatsheet` / `get_cwe`\n"
-            "- `cross_reference` / `compliance_map`\n"
-            "- `assess_stack` / `generate_checklist`\n\n"
-            "## NIST Tools (7)\n\n"
-            "- `search_nist` — Search all NIST sources (controls, CSF, publications, glossary, CMVP, NICE)\n"
-            "- `get_nist_control` — SP 800-53 Rev. 5 (1,196 controls)\n"
+            "- `cross_reference` / `assess_stack` / `generate_checklist`\n\n"
+            "## NIST Tools (11)\n\n"
+            "- `search_nist` — Search all NIST sources (controls, CSF, PF, RMF, publications, glossary, CMVP, NICE)\n"
+            "- `get_nist_control` — SP 800-53 Rev. 5 (1,196 controls + 53A/53B)\n"
             "- `get_nist_csf` — CSF 2.0 (225 entries)\n"
-            "- `get_nist_publication` — 613 publications (SP 800, FIPS, IR, CSWP)\n"
+            "- `get_nist_pf` — Privacy Framework 1.0\n"
+            "- `get_nist_rmf` — SP 800-37 RMF steps and tasks\n"
+            "- `get_nist_publication` / `read_publication` — 613 publications (SP 800, FIPS, IR, CSWP)\n"
+            "- `get_nist_mapping` — CSF ↔ SP 800-53 mappings\n"
             "- `get_nist_glossary` — Cybersecurity terms\n"
             "- `get_nist_cmvp` — FIPS 140 validated crypto modules\n"
             "- `get_nice_roles` — NICE Workforce Framework roles\n\n"
-            "## Security Analysis Tools (4)\n\n"
+            "## Vulnerability & CWE Tools (4)\n\n"
+            "- `search_cve` / `get_cve_detail` — Live NVD CVE search\n"
+            "- `search_kev` — CISA Known Exploited Vulnerabilities\n"
+            "- `get_attack_pattern` — CAPEC attack patterns\n\n"
+            "## Analysis & Assessment Tools (9)\n\n"
+            "- `triage_cve` — CVE triage with EPSS + CVSS + KEV\n"
+            "- `map_finding` — CWE/CVE → remediation chain\n"
+            "- `lookup_compliance` — Reverse compliance lookup (PCI-DSS/ISO → NIST/ASVS)\n"
+            "- `compliance_map` — ASVS → PCI-DSS/ISO/NIST mapping\n"
+            "- `nist_compliance_map` — SP 800-53 → PCI-DSS/ISO mapping\n"
             "- `assess_mcp_security` — MCP Top 10 assessment\n"
             "- `threat_model` — STRIDE threat modeling\n"
-            "- `search_cve` / `get_cve_detail` — Live NVD CVE search\n\n"
+            "- `assess_stack` — Tech stack security assessment\n"
+            "- `generate_checklist` — Security checklist generator\n\n"
             "## Management (2)\n\n"
             "- `update_database` / `database_status`\n\n"
             "## Prompts (4)\n\n"
@@ -218,11 +230,13 @@ def main() -> None:
 
     from security_framework_mcp.nvd import NVDClient
     from security_framework_mcp.kev import KEVClient
+    from security_framework_mcp.epss import EPSSClient
     nvd_api_key = os.environ.get("NVD_API_KEY")
     nvd_client = NVDClient(api_key=nvd_api_key)
     kev_client = KEVClient(cache_dir=config.data_dir)
+    epss_client = EPSSClient()
 
-    register_tools(mcp, index_mgr, nvd_client=nvd_client, kev_client=kev_client)
+    register_tools(mcp, index_mgr, nvd_client=nvd_client, kev_client=kev_client, epss_client=epss_client)
     _register_resources(index_mgr)
     _register_prompts()
 

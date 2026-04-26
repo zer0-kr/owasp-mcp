@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -61,3 +62,39 @@ class KEVClient:
     async def get_kev_count(self) -> int:
         catalog = await self._ensure_catalog()
         return len(catalog.get("vulnerabilities", []))
+
+    _DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+    async def search_catalog(
+        self,
+        *,
+        vendor: str | None = None,
+        product: str | None = None,
+        date_added_after: str | None = None,
+        date_added_before: str | None = None,
+        ransomware_only: bool = False,
+        limit: int = 20,
+    ) -> tuple[list[dict], int]:
+        if date_added_after and not self._DATE_RE.match(date_added_after):
+            raise ValueError(f"Invalid date format: {date_added_after}. Use YYYY-MM-DD")
+        if date_added_before and not self._DATE_RE.match(date_added_before):
+            raise ValueError(f"Invalid date format: {date_added_before}. Use YYYY-MM-DD")
+        catalog = await self._ensure_catalog()
+        results = catalog.get("vulnerabilities", [])
+
+        if vendor:
+            vendor_lower = vendor.lower()
+            results = [v for v in results if vendor_lower in v.get("vendorProject", "").lower()]
+        if product:
+            product_lower = product.lower()
+            results = [v for v in results if product_lower in v.get("product", "").lower()]
+        if date_added_after:
+            results = [v for v in results if v.get("dateAdded", "") >= date_added_after]
+        if date_added_before:
+            results = [v for v in results if v.get("dateAdded", "") <= date_added_before]
+        if ransomware_only:
+            results = [v for v in results if v.get("knownRansomwareCampaignUse", "").lower() == "known"]
+
+        results.sort(key=lambda v: v.get("dateAdded", ""), reverse=True)
+        total = len(results)
+        return results[:limit], total
