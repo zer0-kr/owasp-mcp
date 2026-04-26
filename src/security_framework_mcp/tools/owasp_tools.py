@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from security_framework_mcp.index import IndexManager
     from security_framework_mcp.nvd import NVDClient
     from security_framework_mcp.kev import KEVClient
+    from security_framework_mcp.epss import EPSSClient
 
 log = logging.getLogger(__name__)
 
@@ -53,6 +54,8 @@ _SOURCE_TABLES: dict[str, str] = {
     "nist_nice": "nist_nice",
     "nist_pf": "nist_pf",
     "nist_rmf": "nist_rmf",
+    "capec": "capec",
+    "nist_synonyms": "synonyms",
 }
 
 _SOURCE_LABELS: dict[str, str] = {
@@ -75,6 +78,8 @@ _SOURCE_LABELS: dict[str, str] = {
     "nist_nice": "NICE Work Roles",
     "nist_pf": "NIST Privacy Framework 1.0",
     "nist_rmf": "NIST RMF (SP 800-37)",
+    "capec": "CAPEC Attack Patterns",
+    "nist_synonyms": "NIST Synonyms",
 }
 
 
@@ -123,6 +128,42 @@ def _fmt_cwe(row: dict[str, Any]) -> str:
     return f"**{row.get('cwe_id', '?')}** {row.get('name', '')[:120]}"
 
 
+def _fmt_capec_detail(row: dict[str, Any], db_path: Any) -> str:
+    lines = [f"# {row.get('capec_id', '?')} — {row.get('name', '?')}"]
+    sev = row.get("severity") or "N/A"
+    lik = row.get("likelihood") or "N/A"
+    lines.append(f"\n**Severity:** {sev} | **Likelihood:** {lik}")
+    if row.get("description"):
+        lines.append(f"\n## Description\n{row['description']}")
+    if row.get("prerequisites"):
+        lines.append("\n## Prerequisites")
+        for p in row["prerequisites"].split("\n"):
+            p = p.strip()
+            if p:
+                lines.append(f"- {p}")
+    if row.get("related_cwes"):
+        lines.append("\n## Related CWEs")
+        for cid in row["related_cwes"].split(","):
+            cid = cid.strip()
+            if not cid:
+                continue
+            cwe_rec = db.get_by_id(db_path, "cwes", "cwe_id", cid)
+            cwe_name = cwe_rec["name"] if cwe_rec else ""
+            if cwe_name:
+                lines.append(f"- {cid} — {cwe_name}")
+            else:
+                lines.append(f"- {cid}")
+    if row.get("mitigations"):
+        lines.append("\n## Mitigations")
+        for m in row["mitigations"].split("\n"):
+            m = m.strip()
+            if m:
+                lines.append(f"- {m}")
+    if row.get("url"):
+        lines.append(f"\n**Reference:** {row['url']}")
+    return "\n".join(lines)
+
+
 _FORMATTERS = {
     "projects": _fmt_project,
     "asvs": _fmt_asvs,
@@ -143,10 +184,360 @@ _FORMATTERS = {
     "nist_nice": lambda row: f"**{row.get('id', '?')}** {row.get('name', '')} [{row.get('category', '')}]",
     "nist_pf": lambda row: f"**{row.get('id', '?')}** [{row.get('level', '')}] {row.get('title', '')}",
     "nist_rmf": lambda row: f"**{row.get('step_id', '?')}** {row.get('name', '')} — {row.get('description', '')[:120]}",
+    "capec": lambda row: f"**{row.get('capec_id', '?')}** {row.get('name', '')} (Severity: {row.get('severity', 'N/A')})",
+    "nist_synonyms": lambda row: f"**{row.get('alias', '?')}** — {row.get('canonical', '')}",
 }
 
 
-def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDClient | None" = None, kev_client: "KEVClient | None" = None) -> None:
+def _cwe_in_set(cwes_str: str, target: str) -> bool:
+    return target in {c.strip() for c in cwes_str.split(",")}
+
+
+def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDClient | None" = None, kev_client: "KEVClient | None" = None, epss_client: "EPSSClient | None" = None) -> None:
+
+    # ── Shared compliance maps (used by compliance_map, nist_compliance_map,
+    #    lookup_compliance, and map_finding) ──────────────────────────────────
+
+    _ASVS_COMPLIANCE_MAP: dict[str, dict[str, list[str]]] = {
+        "V1": {
+            "pci-dss": ["6.5.1 (Injection flaws)"],
+            "iso27001": ["A.14.2.5 (Secure system engineering principles)"],
+            "nist-800-53": ["SI-10 (Information Input Validation)", "SI-15 (Information Output Filtering)"],
+        },
+        "V2": {
+            "pci-dss": ["6.5.8 (Improper access control)"],
+            "iso27001": ["A.14.2.5 (Secure system engineering principles)"],
+            "nist-800-53": ["SI-10 (Information Input Validation)"],
+        },
+        "V3": {
+            "pci-dss": ["6.5.10 (Broken authentication)"],
+            "iso27001": ["A.9.4.2 (Secure log-on procedures)", "A.9.2.4 (Management of secret authentication)"],
+            "nist-800-53": ["IA-2 (Identification and Authentication)", "IA-5 (Authenticator Management)"],
+        },
+        "V4": {
+            "pci-dss": ["6.5.8 (Improper access control)", "7.1 (Limit access)"],
+            "iso27001": ["A.9.1.1 (Access control policy)", "A.9.4.1 (Information access restriction)"],
+            "nist-800-53": ["AC-3 (Access Enforcement)", "AC-6 (Least Privilege)"],
+        },
+        "V5": {
+            "pci-dss": ["6.5.1 (Injection flaws)", "6.5.7 (XSS)"],
+            "iso27001": ["A.14.2.5 (Secure system engineering principles)"],
+            "nist-800-53": ["SI-10 (Information Input Validation)"],
+        },
+        "V6": {
+            "pci-dss": ["3.4 (Render PAN unreadable)", "4.1 (Strong cryptography)"],
+            "iso27001": ["A.10.1.1 (Policy on use of cryptographic controls)", "A.10.1.2 (Key management)"],
+            "nist-800-53": ["SC-12 (Cryptographic Key Establishment)", "SC-13 (Cryptographic Protection)"],
+        },
+        "V7": {
+            "pci-dss": ["6.5.10 (Broken authentication)", "8.1 (Identify users)"],
+            "iso27001": ["A.9.4.2 (Secure log-on procedures)"],
+            "nist-800-53": ["SC-23 (Session Authenticity)", "AC-12 (Session Termination)"],
+        },
+        "V8": {
+            "pci-dss": ["6.5.4 (Insecure direct object references)"],
+            "iso27001": ["A.14.1.2 (Securing application services)"],
+            "nist-800-53": ["SC-8 (Transmission Confidentiality and Integrity)"],
+        },
+        "V9": {
+            "pci-dss": ["4.1 (Strong cryptography for transmission)"],
+            "iso27001": ["A.13.1.1 (Network controls)", "A.14.1.2 (Securing application services)"],
+            "nist-800-53": ["SC-8 (Transmission Confidentiality)", "SC-23 (Session Authenticity)"],
+        },
+        "V10": {
+            "pci-dss": ["6.3.2 (Review custom code)", "6.5 (Address common vulnerabilities)"],
+            "iso27001": ["A.14.2.1 (Secure development policy)"],
+            "nist-800-53": ["SA-11 (Developer Testing and Evaluation)", "SI-2 (Flaw Remediation)"],
+        },
+        "V11": {
+            "pci-dss": ["6.5 (Address common coding vulnerabilities)"],
+            "iso27001": ["A.14.2.5 (Secure system engineering principles)"],
+            "nist-800-53": ["SA-11 (Developer Testing and Evaluation)"],
+        },
+        "V12": {
+            "pci-dss": ["6.5.8 (Improper access control)"],
+            "iso27001": ["A.13.1.3 (Segregation in networks)"],
+            "nist-800-53": ["SC-4 (Information in Shared System Resources)"],
+        },
+        "V13": {
+            "pci-dss": ["6.5.1 (Injection)", "6.5.4 (Insecure direct object references)"],
+            "iso27001": ["A.14.1.2 (Securing application services on public networks)"],
+            "nist-800-53": ["SI-10 (Information Input Validation)", "AC-3 (Access Enforcement)"],
+        },
+        "V14": {
+            "pci-dss": ["2.2 (Configuration standards)", "6.2 (Security patches)"],
+            "iso27001": ["A.12.6.1 (Management of technical vulnerabilities)", "A.14.2.2 (System change control)"],
+            "nist-800-53": ["CM-6 (Configuration Settings)", "CM-7 (Least Functionality)"],
+        },
+    }
+
+    _NIST_FAMILY_MAP: dict[str, dict[str, str | list[str]]] = {
+        "AC": {
+            "name": "Access Control",
+            "pci-dss": [
+                "7.1 (Restrict access by business need to know)",
+                "7.2 (Manage access to system components)",
+                "7.3 (Access to system components is formally managed)",
+                "8.2 (User identification and related accounts managed)",
+                "8.3 (Strong authentication for users and administrators)",
+                "8.6 (Use of application and system accounts managed)",
+            ],
+            "iso27001": [
+                "A.5.15 (Access control)",
+                "A.5.18 (Access rights)",
+                "A.8.2 (Privileged access rights)",
+                "A.8.3 (Information access restriction)",
+                "A.8.4 (Access to source code)",
+                "A.8.5 (Secure authentication)",
+            ],
+        },
+        "AT": {
+            "name": "Awareness and Training",
+            "pci-dss": [
+                "12.6 (Security awareness training)",
+            ],
+            "iso27001": [
+                "A.6.3 (Information security awareness, education and training)",
+            ],
+        },
+        "AU": {
+            "name": "Audit and Accountability",
+            "pci-dss": [
+                "10.1 (Logging and monitoring processes defined)",
+                "10.2 (Audit logs record user activities and anomalies)",
+                "10.3 (Audit logs are protected from destruction)",
+                "10.4 (Audit logs are reviewed to identify anomalies)",
+                "10.5 (Audit log history is retained)",
+                "10.7 (Failures of critical security control systems are detected and reported)",
+            ],
+            "iso27001": [
+                "A.8.15 (Logging)",
+                "A.8.17 (Clock synchronization)",
+            ],
+        },
+        "CA": {
+            "name": "Assessment, Authorization, and Monitoring",
+            "pci-dss": [
+                "11.1 (Wireless access points are identified and monitored)",
+                "11.3 (Vulnerabilities are identified and addressed via scanning)",
+                "11.4 (Penetration testing is performed regularly)",
+                "12.4 (PCI DSS compliance is managed)",
+            ],
+            "iso27001": [
+                "A.5.35 (Independent review of information security)",
+                "A.5.36 (Compliance with policies, rules and standards)",
+            ],
+        },
+        "CM": {
+            "name": "Configuration Management",
+            "pci-dss": [
+                "1.1 (Network security controls defined and understood)",
+                "2.1 (Secure configurations processes defined)",
+                "2.2 (System components configured and managed securely)",
+            ],
+            "iso27001": [
+                "A.8.9 (Configuration management)",
+                "A.8.19 (Installation of software on operational systems)",
+                "A.8.32 (Change management)",
+            ],
+        },
+        "CP": {
+            "name": "Contingency Planning",
+            "pci-dss": [
+                "12.10 (Suspected and confirmed security incidents responded to immediately)",
+            ],
+            "iso27001": [
+                "A.5.29 (Information security during disruption)",
+                "A.5.30 (ICT readiness for business continuity)",
+                "A.8.13 (Information backup)",
+                "A.8.14 (Redundancy of information processing facilities)",
+            ],
+        },
+        "IA": {
+            "name": "Identification and Authentication",
+            "pci-dss": [
+                "8.1 (User identification and related accounts managed)",
+                "8.2 (User identification managed throughout the lifecycle)",
+                "8.3 (Strong authentication established and managed)",
+                "8.4 (Multi-factor authentication implemented)",
+                "8.5 (MFA systems configured to prevent misuse)",
+            ],
+            "iso27001": [
+                "A.5.16 (Identity management)",
+                "A.5.17 (Authentication information)",
+                "A.8.5 (Secure authentication)",
+            ],
+        },
+        "IR": {
+            "name": "Incident Response",
+            "pci-dss": [
+                "12.10 (Suspected and confirmed security incidents responded to immediately)",
+            ],
+            "iso27001": [
+                "A.5.24 (Information security incident management planning and preparation)",
+                "A.5.25 (Assessment and decision on information security events)",
+                "A.5.26 (Response to information security incidents)",
+                "A.5.27 (Learning from information security incidents)",
+                "A.5.28 (Collection of evidence)",
+            ],
+        },
+        "MA": {
+            "name": "Maintenance",
+            "pci-dss": [
+                "6.3 (Security vulnerabilities identified and addressed)",
+            ],
+            "iso27001": [
+                "A.7.13 (Equipment maintenance)",
+                "A.8.9 (Configuration management)",
+            ],
+        },
+        "MP": {
+            "name": "Media Protection",
+            "pci-dss": [
+                "3.1 (Account data storage is kept to a minimum)",
+                "3.5 (PAN is secured wherever it is stored)",
+                "9.4 (Media with cardholder data is securely stored, accessed, distributed, and destroyed)",
+            ],
+            "iso27001": [
+                "A.7.10 (Storage media)",
+                "A.7.14 (Secure disposal or re-use of equipment)",
+            ],
+        },
+        "PE": {
+            "name": "Physical and Environmental Protection",
+            "pci-dss": [
+                "9.1 (Physical access to cardholder data managed)",
+                "9.2 (Physical access controls manage entry into facilities)",
+                "9.3 (Physical access for personnel and visitors authorized and managed)",
+                "9.5 (POI devices are protected from tampering and substitution)",
+            ],
+            "iso27001": [
+                "A.7.1 (Physical security perimeters)",
+                "A.7.2 (Physical entry)",
+                "A.7.3 (Securing offices, rooms and facilities)",
+                "A.7.4 (Physical security monitoring)",
+                "A.7.5 (Protecting against physical and environmental threats)",
+            ],
+        },
+        "PL": {
+            "name": "Planning",
+            "pci-dss": [
+                "12.1 (Information security policy established and maintained)",
+                "12.3 (Risks to the cardholder data environment are formally identified and assessed)",
+            ],
+            "iso27001": [
+                "A.5.1 (Policies for information security)",
+                "A.5.2 (Information security roles and responsibilities)",
+            ],
+        },
+        "PM": {
+            "name": "Program Management",
+            "pci-dss": [
+                "12.1 (Information security policy established and maintained)",
+                "12.4 (PCI DSS compliance is managed)",
+                "12.5 (PCI DSS scope documented and validated)",
+            ],
+            "iso27001": [
+                "A.5.1 (Policies for information security)",
+                "A.5.4 (Management responsibilities)",
+            ],
+        },
+        "PS": {
+            "name": "Personnel Security",
+            "pci-dss": [
+                "12.7 (Personnel are screened to reduce risks from insider threats)",
+            ],
+            "iso27001": [
+                "A.6.1 (Screening)",
+                "A.6.2 (Terms and conditions of employment)",
+                "A.6.5 (Responsibilities after termination or change of employment)",
+            ],
+        },
+        "PT": {
+            "name": "PII Processing and Transparency",
+            "pci-dss": [
+                "3.6 (Cryptographic keys used to protect stored account data are secured)",
+                "3.7 (Where cryptography is used to protect stored account data, key management covered)",
+            ],
+            "iso27001": [
+                "A.5.34 (Privacy and protection of PII)",
+            ],
+        },
+        "RA": {
+            "name": "Risk Assessment",
+            "pci-dss": [
+                "6.3 (Security vulnerabilities identified and addressed)",
+                "12.3 (Risks to the cardholder data environment formally identified and assessed)",
+            ],
+            "iso27001": [
+                "A.5.7 (Threat intelligence)",
+                "A.8.8 (Management of technical vulnerabilities)",
+            ],
+        },
+        "SA": {
+            "name": "System and Services Acquisition",
+            "pci-dss": [
+                "6.1 (Secure development processes established)",
+                "6.2 (Bespoke and custom software developed securely)",
+                "6.4 (Public-facing web applications protected against attacks)",
+                "6.5 (Changes to all system components managed securely)",
+                "12.8 (Risk to information assets from third-party service providers managed)",
+            ],
+            "iso27001": [
+                "A.5.19 (Information security in supplier relationships)",
+                "A.5.20 (Addressing information security within supplier agreements)",
+                "A.5.21 (Managing information security in the ICT supply chain)",
+                "A.8.25 (Secure development life cycle)",
+                "A.8.26 (Application security requirements)",
+                "A.8.27 (Secure system architecture and engineering principles)",
+            ],
+        },
+        "SC": {
+            "name": "System and Communications Protection",
+            "pci-dss": [
+                "1.2 (Network security controls configured and maintained)",
+                "1.3 (Network access to and from the cardholder data environment restricted)",
+                "1.4 (Network connections between trusted and untrusted networks controlled)",
+                "4.1 (Strong cryptography protects cardholder data during transmission)",
+                "4.2 (PAN is protected with strong cryptography during transmission)",
+            ],
+            "iso27001": [
+                "A.8.20 (Networks security)",
+                "A.8.21 (Security of network services)",
+                "A.8.22 (Segregation of networks)",
+                "A.8.24 (Use of cryptography)",
+            ],
+        },
+        "SI": {
+            "name": "System and Information Integrity",
+            "pci-dss": [
+                "5.1 (Malicious software prevented or detected and addressed)",
+                "5.2 (Malicious software prevented or detected and addressed)",
+                "5.3 (Anti-malware mechanisms and processes are active and maintained)",
+                "5.4 (Anti-phishing mechanisms protect users)",
+                "6.3 (Security vulnerabilities identified and addressed)",
+                "11.5 (Network intrusions and unexpected file changes detected and responded to)",
+            ],
+            "iso27001": [
+                "A.8.7 (Protection against malware)",
+                "A.8.8 (Management of technical vulnerabilities)",
+            ],
+        },
+        "SR": {
+            "name": "Supply Chain Risk Management",
+            "pci-dss": [
+                "12.8 (Risk to information assets from third-party service providers managed)",
+                "12.9 (Third-party service providers support PCI DSS compliance of their customers)",
+            ],
+            "iso27001": [
+                "A.5.19 (Information security in supplier relationships)",
+                "A.5.20 (Addressing information security within supplier agreements)",
+                "A.5.21 (Managing information security in the ICT supply chain)",
+                "A.5.22 (Monitoring, review and change management of supplier services)",
+                "A.5.23 (Information security for use of cloud services)",
+            ],
+        },
+    }
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False))
     async def update_database() -> str:
@@ -504,10 +895,9 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
 
             cwe_num = cwe_upper.replace("CWE-", "")
 
-            cwe_set_match = lambda cwes_str: cwe_upper in {c.strip() for c in cwes_str.split(",")}
             matched_top10 = [
                 item for item in TOP10_2021
-                if cwe_set_match(item["cwes"])
+                if _cwe_in_set(item["cwes"], cwe_upper)
             ]
             if matched_top10:
                 lines = ["### Top 10 Mapping"]
@@ -833,16 +1223,12 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
         if not url:
             return f"No URL available for '{publication_id}'."
 
-        pdf_url = url
-        if "csrc.nist.gov" in url and not url.endswith(".pdf"):
-            pdf_url = url
-
         doc_dir = index_mgr._config.data_dir / "docs" / publication_id.replace(" ", "_")
         filename = publication_id.replace(" ", "_").replace("/", "_") + ".pdf"
         path = doc_dir / filename
 
         try:
-            await download_file(pdf_url, path)
+            await download_file(url, path)
         except Exception as exc:
             raise ToolError(f"Download failed: {exc}") from exc
 
@@ -895,82 +1281,85 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True))
     async def search_kev(
         cve_id: Annotated[str | None, Field(description="Check if a specific CVE is in CISA KEV")] = None,
+        vendor: Annotated[str | None, Field(description="Filter by vendor, e.g. 'Microsoft', 'Apache'")] = None,
+        product: Annotated[str | None, Field(description="Filter by product, e.g. 'Exchange', 'Log4j'")] = None,
+        date_added_after: Annotated[str | None, Field(description="Filter KEVs added after date (YYYY-MM-DD)")] = None,
+        date_added_before: Annotated[str | None, Field(description="Filter KEVs added before date (YYYY-MM-DD)")] = None,
+        ransomware_only: Annotated[bool, Field(description="Only show KEVs with known ransomware campaign use")] = False,
         count_only: Annotated[bool, Field(description="Just return total KEV count")] = False,
+        limit: Annotated[int, Field(ge=1, le=100, description="Max results to return")] = 20,
     ) -> str:
-        """Search CISA Known Exploited Vulnerabilities (KEV) catalog."""
+        """Search CISA Known Exploited Vulnerabilities (KEV) catalog with vendor, product, date, and ransomware filters."""
         if kev_client is None:
             raise ToolError("KEV client not configured")
 
-        if count_only:
+        if cve_id:
+            entry = await kev_client.get_kev_entry(cve_id)
+            if entry is None:
+                return f"**{cve_id.upper()}** is NOT in the CISA KEV catalog."
+            lines = [
+                f"# {entry.get('cveID', cve_id)} — CISA KEV Entry",
+                "",
+                f"**Vendor/Product:** {entry.get('vendorProject', '')} — {entry.get('product', '')}",
+                f"**Vulnerability:** {entry.get('vulnerabilityName', '')}",
+                f"**Date Added:** {entry.get('dateAdded', '')}",
+                f"**Due Date:** {entry.get('dueDate', '')}",
+                f"**Required Action:** {entry.get('requiredAction', '')}",
+                f"**Known Ransomware Use:** {entry.get('knownRansomwareCampaignUse', 'Unknown')}",
+            ]
+            if entry.get("shortDescription"):
+                lines.append(f"\n## Description\n{entry['shortDescription']}")
+            return "\n".join(lines)
+
+        has_filter = vendor or product or date_added_after or date_added_before or ransomware_only
+        if count_only and not has_filter:
             total = await kev_client.get_kev_count()
             return f"CISA KEV catalog contains **{total}** known exploited vulnerabilities."
 
-        if not cve_id:
-            raise ToolError("Provide cve_id or set count_only=true")
+        if not has_filter and not count_only:
+            raise ToolError("Provide cve_id, filters (vendor/product/date_added_after/date_added_before/ransomware_only), or count_only=true")
 
-        entry = await kev_client.get_kev_entry(cve_id)
-        if entry is None:
-            return f"**{cve_id.upper()}** is NOT in the CISA KEV catalog."
+        results, total = await kev_client.search_catalog(
+            vendor=vendor,
+            product=product,
+            date_added_after=date_added_after,
+            date_added_before=date_added_before,
+            ransomware_only=ransomware_only,
+            limit=limit,
+        )
 
-        lines = [
-            f"# {entry.get('cveID', cve_id)} — CISA KEV Entry",
-            "",
-            f"**Vendor/Product:** {entry.get('vendorProject', '')} — {entry.get('product', '')}",
-            f"**Vulnerability:** {entry.get('vulnerabilityName', '')}",
-            f"**Date Added:** {entry.get('dateAdded', '')}",
-            f"**Due Date:** {entry.get('dueDate', '')}",
-            f"**Required Action:** {entry.get('requiredAction', '')}",
-            f"**Known Ransomware Use:** {entry.get('knownRansomwareCampaignUse', 'Unknown')}",
-        ]
-        if entry.get("shortDescription"):
-            lines.append(f"\n## Description\n{entry['shortDescription']}")
+        if count_only:
+            filter_parts = []
+            if vendor:
+                filter_parts.append(f"vendor={vendor}")
+            if product:
+                filter_parts.append(f"product={product}")
+            if date_added_after:
+                filter_parts.append(f"after {date_added_after}")
+            if date_added_before:
+                filter_parts.append(f"before {date_added_before}")
+            if ransomware_only:
+                filter_parts.append("ransomware only")
+            filter_str = ", ".join(filter_parts)
+            return f"**{total}** KEV entries matching: {filter_str}"
+
+        if not results:
+            return "No KEV entries found matching the given filters."
+
+        header = f"## CISA KEV Search Results ({total} total"
+        if total > limit:
+            header += f", showing {limit}"
+        header += ")\n"
+
+        lines = [header]
+        for entry in results:
+            ransomware_flag = " 🔴" if entry.get("knownRansomwareCampaignUse", "").lower() == "known" else ""
+            lines.append(
+                f"- **{entry.get('cveID', '?')}** — {entry.get('vendorProject', '?')} / "
+                f"{entry.get('product', '?')} — {entry.get('vulnerabilityName', '')}"
+                f" (added: {entry.get('dateAdded', '?')}){ransomware_flag}"
+            )
         return "\n".join(lines)
-
-
-        if project_type in ("web", "full"):
-            items = [f"- [ ] **{t['id']}** {t['name']}" for t in TOP10_2021[:per_section]]
-            item_count += len(items)
-            sections.append("### Web Application — Top 10 2021\n" + "\n".join(items))
-            wstg_items = []
-            for cat in ["WSTG-INFO", "WSTG-CONF", "WSTG-IDNT", "WSTG-ATHN", "WSTG-ATHZ", "WSTG-SESS", "WSTG-INPV", "WSTG-CLNT"][:per_section]:
-                results, _ = db.get_all(db_path, "wstg", filters={"category_id": cat}, limit=3)
-                for r in results:
-                    wstg_items.append(f"- [ ] **{r['test_id']}** {r['name']}")
-                    item_count += 1
-            if wstg_items:
-                sections.append("### Web — Testing (WSTG)\n" + "\n".join(wstg_items[:per_section]))
-
-        if project_type in ("api", "full"):
-            items = [f"- [ ] **{a['id']}** {a['name']}" for a in API_TOP10_2023[:per_section]]
-            item_count += len(items)
-            sections.append("### API Security — Top 10 2023\n" + "\n".join(items))
-
-        if project_type in ("mobile", "full"):
-            from security_framework_mcp.collectors.masvs import MASVS_DATA
-            items = []
-            for _, _, controls in MASVS_DATA:
-                for ctrl_id, statement, _ in controls[:2 if level == "basic" else 99]:
-                    items.append(f"- [ ] **{ctrl_id}** {statement}")
-                    item_count += 1
-            sections.append("### Mobile Security — MASVS\n" + "\n".join(items[:per_section]))
-
-        if project_type in ("llm", "full"):
-            items = [f"- [ ] **{l['id']}** {l['name']}" for l in LLM_TOP10_2025[:per_section]]
-            item_count += len(items)
-            sections.append("### AI/LLM Security — Top 10 2025\n" + "\n".join(items))
-
-        asvs_level = "1" if level == "basic" else "2" if level == "standard" else "3"
-        results, _ = db.get_all(db_path, "asvs", filters={"level": asvs_level}, limit=per_section)
-        asvs_items = [f"- [ ] **{r['req_id']}** {r['req_description'][:120]}" for r in results]
-        item_count += len(asvs_items)
-        if asvs_items:
-            sections.append(f"### Verification — ASVS Level {asvs_level}\n" + "\n".join(asvs_items))
-
-        pc_items = [f"- [ ] **{pc['id']}** {pc['name']}" for pc in PROACTIVE_CONTROLS_2024[:per_section]]
-        item_count += len(pc_items)
-        sections.append("### Defensive Controls — Proactive Controls 2024\n" + "\n".join(pc_items))
-
-        return f"## Security Checklist: {project_type.upper()} ({level})\n\n_{item_count} items_\n" + "\n\n".join(sections)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def search_nist(
@@ -981,7 +1370,9 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
         ] = "all",
         limit: Annotated[int, Field(ge=1, le=50)] = 10,
     ) -> str:
-        """Search NIST data: SP 800-53 controls, CSF 2.0, and glossary."""
+        """Search NIST data: SP 800-53 controls, CSF 2.0, PF 1.0, RMF, publications, glossary, CMVP, and NICE roles."""
+        if source is None:
+            source = "all"
         db_path = await index_mgr.ensure_index()
 
         source_map = {
@@ -993,6 +1384,7 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
             "nice": ("nist_nice", "NICE Work Roles"),
             "pf": ("nist_pf", "NIST Privacy Framework 1.0"),
             "rmf": ("nist_rmf", "NIST RMF (SP 800-37)"),
+            "synonyms": ("synonyms", "NIST Synonyms"),
         }
         sources = list(source_map.items()) if source == "all" else [(source, source_map[source])]
 
@@ -1047,7 +1439,7 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
                 lines.append(f"\n## Statement\n{record['statement'][:3000]}")
             if record.get("guidance"):
                 lines.append(f"\n## Supplemental Guidance\n{record['guidance'][:3000]}")
-            if include_assessment or True:
+            if include_assessment:
                 if record.get("assessment_objectives"):
                     lines.append(f"\n## Assessment Objectives (SP 800-53A)\n{record['assessment_objectives'][:2000]}")
                 if record.get("assessment_methods"):
@@ -1258,12 +1650,15 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
         db_path = await index_mgr.ensure_index()
 
         if query:
+            filters: dict[str, Any] = {}
+            if category:
+                filters["category"] = category
             try:
-                results, total = db.search_fts(db_path, "nist_nice", query, limit=limit)
+                results, total = db.search_fts(db_path, "nist_nice", query, filters=filters, limit=limit)
             except Exception as exc:
                 raise ToolError(f"NICE search failed: {exc}") from exc
         else:
-            filters: dict[str, Any] = {}
+            filters = {}
             if category:
                 filters["category"] = category
             results, total = db.get_all(db_path, "nist_nice", filters=filters, limit=limit)
@@ -1275,67 +1670,6 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
         for r in results:
             lines.append(f"- **{r['id']}** {r['name']} [{r['category']}]\n  _{r.get('description', '')[:150]}_")
         return "\n".join(lines)
-
-        sections: list[str] = []
-        item_count = 0
-
-        if project_type in ("web", "full"):
-            items = []
-            for t10 in TOP10_2021[:per_section]:
-                items.append(f"- [ ] **{t10['id']}** {t10['name']}")
-                item_count += 1
-            sections.append("### Web Application — Top 10 2021\n" + "\n".join(items))
-
-            wstg_cats = ["WSTG-INFO", "WSTG-CONF", "WSTG-IDNT", "WSTG-ATHN", "WSTG-ATHZ", "WSTG-SESS", "WSTG-INPV", "WSTG-CLNT"]
-            wstg_items = []
-            for cat in wstg_cats[:per_section]:
-                results, _ = db.get_all(db_path, "wstg", filters={"category_id": cat}, limit=3)
-                for r in results:
-                    wstg_items.append(f"- [ ] **{r['test_id']}** {r['name']}")
-                    item_count += 1
-            if wstg_items:
-                sections.append("### Web — Testing (WSTG)\n" + "\n".join(wstg_items[:per_section]))
-
-        if project_type in ("api", "full"):
-            items = []
-            for a in API_TOP10_2023[:per_section]:
-                items.append(f"- [ ] **{a['id']}** {a['name']}")
-                item_count += 1
-            sections.append("### API Security — Top 10 2023\n" + "\n".join(items))
-
-        if project_type in ("mobile", "full"):
-            from security_framework_mcp.collectors.masvs import MASVS_DATA
-            items = []
-            for cat_id, cat_name, controls in MASVS_DATA:
-                for ctrl_id, statement, _ in controls[:2 if level == "basic" else 99]:
-                    items.append(f"- [ ] **{ctrl_id}** {statement}")
-                    item_count += 1
-            sections.append("### Mobile Security — MASVS\n" + "\n".join(items[:per_section]))
-
-        if project_type in ("llm", "full"):
-            items = []
-            for l in LLM_TOP10_2025[:per_section]:
-                items.append(f"- [ ] **{l['id']}** {l['name']}")
-                item_count += 1
-            sections.append("### AI/LLM Security — Top 10 2025\n" + "\n".join(items))
-
-        asvs_items = []
-        asvs_level = "1" if level == "basic" else "2" if level == "standard" else "3"
-        results, _ = db.get_all(db_path, "asvs", filters={"level": asvs_level}, limit=per_section)
-        for r in results:
-            asvs_items.append(f"- [ ] **{r['req_id']}** {r['req_description'][:120]}")
-            item_count += 1
-        if asvs_items:
-            sections.append(f"### Verification — ASVS Level {asvs_level}\n" + "\n".join(asvs_items))
-
-        pc_items = []
-        for pc in PROACTIVE_CONTROLS_2024[:per_section]:
-            pc_items.append(f"- [ ] **{pc['id']}** {pc['name']}")
-            item_count += 1
-        sections.append("### Defensive Controls — Proactive Controls 2024\n" + "\n".join(pc_items))
-
-        header = f"## Security Checklist: {project_type.upper()} ({level})\n\n_{item_count} items_\n"
-        return header + "\n\n".join(sections)
 
     @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
     async def get_nist_pf(
@@ -1682,10 +2016,9 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
             f"**MITRE URL:** {record['url']}",
         ]
 
-        cwe_set_match = lambda cwes_str: cwe_id in {c.strip() for c in cwes_str.split(",")}
-        matched_top10 = [i for i in TOP10_2021 if cwe_set_match(i["cwes"])]
-        matched_api = [i for i in API_TOP10_2023 if cwe_set_match(i["cwes"])]
-        matched_llm = [i for i in LLM_TOP10_2025 if cwe_set_match(i["cwes"])]
+        matched_top10 = [i for i in TOP10_2021 if _cwe_in_set(i["cwes"], cwe_id)]
+        matched_api = [i for i in API_TOP10_2023 if _cwe_in_set(i["cwes"], cwe_id)]
+        matched_llm = [i for i in LLM_TOP10_2025 if _cwe_in_set(i["cwes"], cwe_id)]
 
         if matched_top10 or matched_api or matched_llm:
             lines.append("\n## OWASP Mappings")
@@ -1710,81 +2043,8 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
         ] = None,
     ) -> str:
         """Map OWASP ASVS requirements to compliance frameworks (PCI-DSS, ISO 27001, NIST 800-53)."""
-        _COMPLIANCE_MAP: dict[str, dict[str, list[str]]] = {
-            "V1": {
-                "pci-dss": ["6.5.1 (Injection flaws)"],
-                "iso27001": ["A.14.2.5 (Secure system engineering principles)"],
-                "nist-800-53": ["SI-10 (Information Input Validation)", "SI-15 (Information Output Filtering)"],
-            },
-            "V2": {
-                "pci-dss": ["6.5.8 (Improper access control)"],
-                "iso27001": ["A.14.2.5 (Secure system engineering principles)"],
-                "nist-800-53": ["SI-10 (Information Input Validation)"],
-            },
-            "V3": {
-                "pci-dss": ["6.5.10 (Broken authentication)"],
-                "iso27001": ["A.9.4.2 (Secure log-on procedures)", "A.9.2.4 (Management of secret authentication)"],
-                "nist-800-53": ["IA-2 (Identification and Authentication)", "IA-5 (Authenticator Management)"],
-            },
-            "V4": {
-                "pci-dss": ["6.5.8 (Improper access control)", "7.1 (Limit access)"],
-                "iso27001": ["A.9.1.1 (Access control policy)", "A.9.4.1 (Information access restriction)"],
-                "nist-800-53": ["AC-3 (Access Enforcement)", "AC-6 (Least Privilege)"],
-            },
-            "V5": {
-                "pci-dss": ["6.5.1 (Injection flaws)", "6.5.7 (XSS)"],
-                "iso27001": ["A.14.2.5 (Secure system engineering principles)"],
-                "nist-800-53": ["SI-10 (Information Input Validation)"],
-            },
-            "V6": {
-                "pci-dss": ["3.4 (Render PAN unreadable)", "4.1 (Strong cryptography)"],
-                "iso27001": ["A.10.1.1 (Policy on use of cryptographic controls)", "A.10.1.2 (Key management)"],
-                "nist-800-53": ["SC-12 (Cryptographic Key Establishment)", "SC-13 (Cryptographic Protection)"],
-            },
-            "V7": {
-                "pci-dss": ["6.5.10 (Broken authentication)", "8.1 (Identify users)"],
-                "iso27001": ["A.9.4.2 (Secure log-on procedures)"],
-                "nist-800-53": ["SC-23 (Session Authenticity)", "AC-12 (Session Termination)"],
-            },
-            "V8": {
-                "pci-dss": ["6.5.4 (Insecure direct object references)"],
-                "iso27001": ["A.14.1.2 (Securing application services)"],
-                "nist-800-53": ["SC-8 (Transmission Confidentiality and Integrity)"],
-            },
-            "V9": {
-                "pci-dss": ["4.1 (Strong cryptography for transmission)"],
-                "iso27001": ["A.13.1.1 (Network controls)", "A.14.1.2 (Securing application services)"],
-                "nist-800-53": ["SC-8 (Transmission Confidentiality)", "SC-23 (Session Authenticity)"],
-            },
-            "V10": {
-                "pci-dss": ["6.3.2 (Review custom code)", "6.5 (Address common vulnerabilities)"],
-                "iso27001": ["A.14.2.1 (Secure development policy)"],
-                "nist-800-53": ["SA-11 (Developer Testing and Evaluation)", "SI-2 (Flaw Remediation)"],
-            },
-            "V11": {
-                "pci-dss": ["6.5 (Address common coding vulnerabilities)"],
-                "iso27001": ["A.14.2.5 (Secure system engineering principles)"],
-                "nist-800-53": ["SA-11 (Developer Testing and Evaluation)"],
-            },
-            "V12": {
-                "pci-dss": ["6.5.8 (Improper access control)"],
-                "iso27001": ["A.13.1.3 (Segregation in networks)"],
-                "nist-800-53": ["SC-4 (Information in Shared System Resources)"],
-            },
-            "V13": {
-                "pci-dss": ["6.5.1 (Injection)", "6.5.4 (Insecure direct object references)"],
-                "iso27001": ["A.14.1.2 (Securing application services on public networks)"],
-                "nist-800-53": ["SI-10 (Information Input Validation)", "AC-3 (Access Enforcement)"],
-            },
-            "V14": {
-                "pci-dss": ["2.2 (Configuration standards)", "6.2 (Security patches)"],
-                "iso27001": ["A.12.6.1 (Management of technical vulnerabilities)", "A.14.2.2 (System change control)"],
-                "nist-800-53": ["CM-6 (Configuration Settings)", "CM-7 (Least Functionality)"],
-            },
-        }
-
         frameworks = [framework] if framework != "all" else ["pci-dss", "iso27001", "nist-800-53"]
-        chapters = [asvs_chapter.upper()] if asvs_chapter else sorted(_COMPLIANCE_MAP.keys())
+        chapters = [asvs_chapter.upper()] if asvs_chapter else sorted(_ASVS_COMPLIANCE_MAP.keys())
 
         _FRAMEWORK_LABELS = {
             "pci-dss": "PCI-DSS 4.0",
@@ -1794,9 +2054,9 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
 
         sections: list[str] = []
         for ch in chapters:
-            if ch not in _COMPLIANCE_MAP:
+            if ch not in _ASVS_COMPLIANCE_MAP:
                 continue
-            ch_map = _COMPLIANCE_MAP[ch]
+            ch_map = _ASVS_COMPLIANCE_MAP[ch]
             lines = [f"### ASVS {ch}"]
             for fw in frameworks:
                 controls = ch_map.get(fw, [])
@@ -1812,3 +2072,602 @@ def register_tools(mcp: "FastMCP", index_mgr: "IndexManager", nvd_client: "NVDCl
             header += f" — ASVS {asvs_chapter.upper()}"
         header += f"\n\n_Mapping ASVS chapters to {', '.join(_FRAMEWORK_LABELS.get(f, f) for f in frameworks)}_\n"
         return header + "\n\n".join(sections)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def nist_compliance_map(
+        family: Annotated[
+            str | None,
+            Field(description="SP 800-53 control family ID, e.g. 'AC', 'SI'. Omit to list all families."),
+        ] = None,
+        target_framework: Annotated[
+            Literal["pci-dss", "iso27001", "all"],
+            Field(description="Target compliance framework to map NIST controls to"),
+        ] = "all",
+    ) -> str:
+        """Map NIST SP 800-53 Rev. 5 control families to PCI-DSS 4.0 and ISO 27001:2022."""
+
+        _FRAMEWORK_LABELS = {
+            "pci-dss": "PCI-DSS 4.0",
+            "iso27001": "ISO 27001:2022",
+        }
+
+        frameworks = [target_framework] if target_framework != "all" else ["pci-dss", "iso27001"]
+
+        if family:
+            family_upper = family.strip().upper()
+            if family_upper not in _NIST_FAMILY_MAP:
+                valid = ", ".join(sorted(_NIST_FAMILY_MAP.keys()))
+                return f"Family '{family}' not found. Valid families: {valid}"
+            families = [family_upper]
+        else:
+            families = sorted(_NIST_FAMILY_MAP.keys())
+
+        sections: list[str] = []
+        for fam in families:
+            fam_data = _NIST_FAMILY_MAP[fam]
+            fam_name = fam_data["name"]
+            lines = [f"### {fam} — {fam_name}"]
+            for fw in frameworks:
+                controls = fam_data.get(fw, [])
+                if controls:
+                    lines.append(f"**{_FRAMEWORK_LABELS.get(fw, fw)}:** {', '.join(controls)}")
+            sections.append("\n".join(lines))
+
+        if not sections:
+            return "No compliance mapping found for the given criteria."
+
+        header = "## NIST SP 800-53 Rev. 5 Compliance Mapping"
+        if family:
+            header += f" — {family.strip().upper()}"
+        header += f"\n\n_Mapping SP 800-53 control families to {', '.join(_FRAMEWORK_LABELS.get(f, f) for f in frameworks)}_\n"
+        footer = "\n\n_Note: Mappings are based on NIST OLIR crosswalks and Open Security Architecture references. Treat as starting points for detailed gap analysis._"
+        return header + "\n\n".join(sections) + footer
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def lookup_compliance(
+        requirement: Annotated[str, Field(description="Compliance requirement ID, e.g. 'PCI-DSS 8.3', 'ISO27001 A.5.15', '7.1'", max_length=100)],
+        framework: Annotated[
+            Literal["pci-dss", "iso27001"] | None,
+            Field(description="Source framework. Auto-detected if requirement starts with 'A.' (ISO) or is numeric (PCI)"),
+        ] = None,
+    ) -> str:
+        """Reverse compliance lookup — find NIST SP 800-53 families, ASVS chapters, and related controls from a PCI-DSS or ISO 27001 requirement."""
+
+        _ASVS_CHAPTERS: dict[str, str] = {
+            "V1": "Architecture, Design and Threat Modeling",
+            "V2": "Authentication",
+            "V3": "Session Management",
+            "V4": "Access Control",
+            "V5": "Validation, Sanitization and Encoding",
+            "V6": "Stored Cryptography",
+            "V7": "Error Handling and Logging",
+            "V8": "Data Protection",
+            "V9": "Communication",
+            "V10": "Malicious Code",
+            "V11": "Business Logic",
+            "V12": "Files and Resources",
+            "V13": "API and Web Service",
+            "V14": "Configuration",
+        }
+
+        req = requirement.strip()
+        detected_fw = framework
+
+        req_upper = req.upper()
+        if "PCI" in req_upper:
+            if detected_fw is None:
+                detected_fw = "pci-dss"
+            for prefix in ["PCI-DSS", "PCI DSS", "PCIDSS", "PCI"]:
+                if req_upper.startswith(prefix.upper()):
+                    req = req[len(prefix):].lstrip(" -:").strip()
+                    break
+        elif "ISO" in req_upper:
+            if detected_fw is None:
+                detected_fw = "iso27001"
+            for prefix in ["ISO27001", "ISO 27001", "ISO"]:
+                if req_upper.startswith(prefix.upper()):
+                    req = req[len(prefix):].lstrip(" -:").strip()
+                    break
+        elif req.startswith(("A.", "a.")):
+            if detected_fw is None:
+                detected_fw = "iso27001"
+        elif req[:1].isdigit():
+            if detected_fw is None:
+                detected_fw = "pci-dss"
+
+        fw_keys = [detected_fw] if detected_fw else ["pci-dss", "iso27001"]
+
+        def _entry_num(entry: str) -> str:
+            return entry.split("(")[0].strip()
+
+        def _matches(entry: str, query: str) -> bool:
+            num = _entry_num(entry).lower()
+            q = query.lower()
+            return num == q or num.startswith(q + ".")
+
+        matched_entries: list[str] = []
+        asvs_chapters: list[str] = []
+        nist_families: list[tuple[str, str]] = []
+        related_nist_controls: list[str] = []
+
+        for fw_key in fw_keys:
+            for chapter, mappings in _ASVS_COMPLIANCE_MAP.items():
+                fw_entries = mappings.get(fw_key, [])
+                chapter_matched = False
+                for entry in fw_entries:
+                    if _matches(entry, req):
+                        if entry not in matched_entries:
+                            matched_entries.append(entry)
+                        chapter_matched = True
+                if chapter_matched and chapter not in asvs_chapters:
+                    asvs_chapters.append(chapter)
+                    for ctrl in mappings.get("nist-800-53", []):
+                        if ctrl not in related_nist_controls:
+                            related_nist_controls.append(ctrl)
+
+            for fam_id, fam_data in _NIST_FAMILY_MAP.items():
+                fw_entries = fam_data.get(fw_key, [])
+                for entry in fw_entries:
+                    if _matches(entry, req):
+                        if entry not in matched_entries:
+                            matched_entries.append(entry)
+                        fam_tuple = (fam_id, str(fam_data["name"]))
+                        if fam_tuple not in nist_families:
+                            nist_families.append(fam_tuple)
+
+        if nist_families:
+            family_ids = {fam_id for fam_id, _ in nist_families}
+            for mappings in _ASVS_COMPLIANCE_MAP.values():
+                for ctrl in mappings.get("nist-800-53", []):
+                    ctrl_prefix = ctrl.split("-")[0]
+                    if ctrl_prefix in family_ids and ctrl not in related_nist_controls:
+                        related_nist_controls.append(ctrl)
+
+        if not matched_entries:
+            pci_examples: set[str] = set()
+            iso_examples: set[str] = set()
+            for m in _ASVS_COMPLIANCE_MAP.values():
+                for e in m.get("pci-dss", []):
+                    pci_examples.add(_entry_num(e))
+                for e in m.get("iso27001", []):
+                    iso_examples.add(_entry_num(e))
+            for fam_data in _NIST_FAMILY_MAP.values():
+                for e in fam_data.get("pci-dss", []):
+                    pci_examples.add(_entry_num(e))
+                for e in fam_data.get("iso27001", []):
+                    iso_examples.add(_entry_num(e))
+
+            pci_sample = ", ".join(sorted(pci_examples)[:8])
+            iso_sample = ", ".join(sorted(iso_examples)[:8])
+            return (
+                f"## No Match Found\n\n"
+                f"Requirement '{requirement}' not found in compliance mappings.\n\n"
+                f"**PCI-DSS examples:** {pci_sample}\n"
+                f"**ISO 27001 examples:** {iso_sample}"
+            )
+
+        fw_label = "PCI-DSS" if detected_fw == "pci-dss" else ("ISO 27001" if detected_fw == "iso27001" else "Compliance")
+
+        lines = [f"## Reverse Compliance Lookup — {fw_label} {req}"]
+
+        if len(matched_entries) == 1:
+            lines.append(f"\n_Requirement: {matched_entries[0]}_")
+        else:
+            lines.append(f"\n_Matched {len(matched_entries)} requirements:_")
+            for e in matched_entries:
+                lines.append(f"- {e}")
+
+        if nist_families:
+            lines.append("\n### NIST SP 800-53 Families")
+            for fam_id, fam_name in sorted(nist_families):
+                lines.append(f"- **{fam_id}** — {fam_name}")
+
+        if asvs_chapters:
+            lines.append("\n### ASVS Chapters")
+            for ch in sorted(asvs_chapters):
+                ch_name = _ASVS_CHAPTERS.get(ch, "")
+                lines.append(f"- **{ch}** — {ch_name}")
+
+        if related_nist_controls:
+            lines.append("\n### Related NIST Controls")
+            for ctrl in sorted(related_nist_controls):
+                lines.append(f"- {ctrl}")
+
+        return "\n".join(lines)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True))
+    async def triage_cve(
+        cve_ids: Annotated[str, Field(description="Comma-separated CVE IDs, e.g. 'CVE-2024-1234,CVE-2024-5678'", max_length=2000)],
+    ) -> str:
+        """Triage CVEs with EPSS scores, CVSS severity, and KEV status. Note: makes individual NVD API calls per CVE; expect ~6s/CVE without API key."""
+        raw_ids = [c.strip().upper() for c in cve_ids.split(",") if c.strip()]
+        if not raw_ids:
+            raise ToolError("No valid CVE IDs provided")
+        if len(raw_ids) > 50:
+            raise ToolError("Maximum 50 CVE IDs per request")
+
+        epss_scores: dict[str, dict] = {}
+        if epss_client is not None:
+            try:
+                epss_scores = await epss_client.get_scores(raw_ids)
+            except Exception as exc:
+                log.warning("EPSS batch fetch failed: %s", exc)
+
+        _TIER_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+        _TIER_EMOJI = {"CRITICAL": "\U0001f534", "HIGH": "\U0001f7e0", "MEDIUM": "\U0001f7e1", "LOW": "\U0001f7e2"}
+
+        results: list[dict] = []
+
+        for cid in raw_ids:
+            cvss_score = 0.0
+            cvss_severity = "N/A"
+            description = "N/A"
+            cwes: list[str] = []
+
+            if nvd_client is not None:
+                try:
+                    data = await nvd_client.get_cve(cid)
+                    vulns = data.get("vulnerabilities", [])
+                    if vulns:
+                        cve = vulns[0].get("cve", vulns[0])
+                        for desc in cve.get("descriptions", []):
+                            if desc.get("lang") == "en":
+                                description = desc.get("value", "N/A")
+                                break
+                        for bucket in ("cvssMetricV31", "cvssMetricV30"):
+                            metrics = cve.get("metrics", {}).get(bucket, [])
+                            if metrics:
+                                cvss_data = metrics[0].get("cvssData", {})
+                                cvss_score = float(cvss_data.get("baseScore", 0))
+                                cvss_severity = cvss_data.get("baseSeverity", "N/A")
+                                break
+                        for w in cve.get("weaknesses", []):
+                            for d in w.get("description", []):
+                                if d.get("lang") == "en" and d.get("value"):
+                                    cwes.append(d["value"])
+                except Exception as exc:
+                    log.warning("NVD fetch failed for %s: %s", cid, exc)
+
+            epss_data = epss_scores.get(cid, {})
+            epss_val = epss_data.get("epss", 0.0)
+            epss_pct = epss_data.get("percentile", 0.0)
+
+            kev_entry: dict | None = None
+            if kev_client is not None:
+                try:
+                    kev_entry = await kev_client.get_kev_entry(cid)
+                except Exception as exc:
+                    log.warning("KEV fetch failed for %s: %s", cid, exc)
+
+            if kev_entry is not None:
+                tier = "CRITICAL"
+            elif epss_val >= 0.7 and cvss_score >= 9.0:
+                tier = "CRITICAL"
+            elif epss_val >= 0.4 or cvss_score >= 7.0:
+                tier = "HIGH"
+            elif epss_val >= 0.1 or cvss_score >= 4.0:
+                tier = "MEDIUM"
+            else:
+                tier = "LOW"
+
+            results.append({
+                "cve_id": cid,
+                "tier": tier,
+                "cvss_score": cvss_score,
+                "cvss_severity": cvss_severity,
+                "epss": epss_val,
+                "epss_percentile": epss_pct,
+                "kev_entry": kev_entry,
+                "cwes": cwes,
+                "description": description,
+            })
+
+        results.sort(key=lambda r: (_TIER_ORDER.get(r["tier"], 99), -r["cvss_score"], -r["epss"]))
+
+        lines = [f"## CVE Triage Results ({len(results)} CVEs)\n"]
+        for r in results:
+            emoji = _TIER_EMOJI.get(r["tier"], "")
+            lines.append(f"### {emoji} {r['tier']} \u2014 {r['cve_id']}")
+
+            cvss_part = f"{r['cvss_score']} ({r['cvss_severity']})" if r["cvss_score"] > 0 else "N/A"
+            epss_part = f"{r['epss'] * 100:.1f}% (percentile: {r['epss_percentile'] * 100:.1f}%)" if r["epss"] > 0 else "N/A"
+            lines.append(f"- **CVSS:** {cvss_part} | **EPSS:** {epss_part}")
+
+            if r["kev_entry"] is not None:
+                kev = r["kev_entry"]
+                lines.append(f"- **KEV Status:** \u26a0\ufe0f In CISA KEV (due: {kev.get('dueDate', 'N/A')})")
+            else:
+                lines.append("- **KEV Status:** Not in CISA KEV")
+
+            if r["cwes"]:
+                lines.append(f"- **CWE:** {', '.join(sorted(set(r['cwes'])))}")
+
+            desc = r["description"]
+            if len(desc) > 300:
+                desc = desc[:297] + "..."
+            lines.append(f"- **Description:** {desc}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def map_finding(
+        cwe: Annotated[str | None, Field(description="CWE ID, e.g. 'CWE-79' or '79'")] = None,
+        cve: Annotated[str | None, Field(description="CVE ID, e.g. 'CVE-2024-1234'. CWE will be auto-extracted from NVD data")] = None,
+        description: Annotated[str | None, Field(description="Free-text finding description for keyword-based matching", max_length=1000)] = None,
+    ) -> str:
+        """Map a security finding (CWE, CVE, or description) to a complete remediation package: CWE details, OWASP Top 10 / API Top 10 / LLM Top 10 mappings, ASVS requirements, WSTG test cases, cheat sheets, and compliance impact (PCI-DSS 4.0, ISO 27001:2022, NIST 800-53)."""
+        _KEYWORD_CWE: dict[str, str] = {
+            "cross-site scripting": "79", "cross site scripting": "79", "xss": "79",
+            "sql injection": "89", "sqli": "89",
+            "server-side request forgery": "918", "server side request forgery": "918", "ssrf": "918",
+            "cross-site request forgery": "352", "cross site request forgery": "352", "csrf": "352",
+            "xml external entity": "611", "xxe": "611",
+            "path traversal": "22", "directory traversal": "22",
+            "open redirect": "601",
+            "insecure deserialization": "502", "deserialization": "502",
+            "os command injection": "78", "command injection": "78",
+            "unrestricted file upload": "434", "file upload": "434",
+        }
+
+        _CWE_SEARCH_HINTS: dict[str, list[str]] = {
+            "79": ["XSS", "cross-site scripting"],
+            "89": ["SQL Injection"],
+            "918": ["SSRF"],
+            "352": ["CSRF"],
+            "611": ["XXE"],
+            "22": ["path traversal"],
+            "601": ["redirect"],
+            "502": ["deserialization"],
+            "78": ["command injection"],
+            "434": ["file upload"],
+        }
+
+        cwe_id: str | None = None
+        cve_source: str | None = None
+
+        if cwe:
+            cwe_id = cwe.strip().upper()
+            if not cwe_id.startswith("CWE-"):
+                cwe_id = f"CWE-{cwe_id}"
+        elif cve:
+            if nvd_client is None:
+                raise ToolError("NVD client not configured — cannot extract CWE from CVE")
+            cve_upper = cve.strip().upper()
+            try:
+                data = await nvd_client.get_cve(cve_upper)
+            except Exception as exc:
+                raise ToolError(f"NVD API error: {exc}") from exc
+            vulns = data.get("vulnerabilities", [])
+            if not vulns:
+                raise ToolError(f"CVE '{cve}' not found in NVD")
+            cve_data = vulns[0].get("cve", vulns[0])
+            cve_source = cve_upper
+            for w in cve_data.get("weaknesses", []):
+                for d in w.get("description", []):
+                    val = d.get("value", "")
+                    if d.get("lang") == "en" and val.startswith("CWE-"):
+                        cwe_id = val
+                        break
+                if cwe_id:
+                    break
+            if not cwe_id:
+                raise ToolError(f"No CWE found in {cve_source} weakness data")
+        elif description:
+            desc_lower = description.lower()
+            for keyword, cwe_num in sorted(_KEYWORD_CWE.items(), key=lambda x: -len(x[0])):
+                if keyword in desc_lower:
+                    cwe_id = f"CWE-{cwe_num}"
+                    break
+            if not cwe_id:
+                raise ToolError("Could not identify a CWE from the description. Try providing a CWE or CVE ID directly.")
+        else:
+            raise ToolError("Provide at least one of: cwe, cve, or description")
+
+        cwe_num = cwe_id.replace("CWE-", "")
+        db_path = await index_mgr.ensure_index()
+
+        cwe_record = db.get_by_id(db_path, "cwes", "cwe_id", cwe_id)
+        cwe_name = cwe_record["name"] if cwe_record else "Unknown"
+        cwe_desc = cwe_record.get("description", "") if cwe_record else ""
+
+        matched_top10 = [i for i in TOP10_2021 if _cwe_in_set(i["cwes"], cwe_id)]
+        matched_api = [i for i in API_TOP10_2023 if _cwe_in_set(i["cwes"], cwe_id)]
+        matched_llm = [i for i in LLM_TOP10_2025 if _cwe_in_set(i["cwes"], cwe_id)]
+
+        asvs_results: list[dict[str, Any]] = []
+        search_terms = [cwe_num] + _CWE_SEARCH_HINTS.get(cwe_num, [])
+        for term in search_terms:
+            try:
+                results, _ = db.search_fts(db_path, "asvs", term, limit=15)
+                if results:
+                    asvs_results = results
+                    break
+            except Exception:
+                continue
+
+        wstg_results: list[dict[str, Any]] = []
+        for term in search_terms:
+            try:
+                results, _ = db.search_fts(db_path, "wstg", term, limit=10)
+                if results:
+                    wstg_results = results
+                    break
+            except Exception:
+                continue
+
+        capec_results: list[dict[str, Any]] = []
+        cwe_search = cwe_id.replace('%', '').replace('_', '')
+        conn = db.get_connection(db_path)
+        try:
+            capec_rows = conn.execute(
+                "SELECT * FROM capec WHERE ',' || related_cwes || ',' LIKE ? LIMIT 5",
+                (f"%,{cwe_search},%",),
+            ).fetchall()
+            capec_results = [dict(r) for r in capec_rows]
+        finally:
+            conn.close()
+
+        cs_results: list[dict[str, Any]] = []
+        cs_seen: set[str] = set()
+        cs_terms = _CWE_SEARCH_HINTS.get(cwe_num, [])
+        if cwe_name != "Unknown":
+            cs_terms = [cwe_name] + cs_terms
+        for term in cs_terms:
+            try:
+                results, _ = db.search_fts(db_path, "cheatsheets", term, limit=5)
+                for r in results:
+                    name = r.get("name", "")
+                    if name and name not in cs_seen:
+                        cs_seen.add(name)
+                        cs_results.append(r)
+            except Exception:
+                continue
+
+        out: list[str] = [f"## Finding Remediation — {cwe_id} ({cwe_name})"]
+
+        if cve_source:
+            out.append(f"\n_Auto-extracted from {cve_source}_")
+
+        out.append("\n### CWE Details")
+        if cwe_record:
+            out.append(f"**{cwe_id}** — {cwe_name}")
+            if cwe_desc:
+                out.append(cwe_desc[:500])
+            if cwe_record.get("url"):
+                out.append(f"\n**MITRE URL:** {cwe_record['url']}")
+        else:
+            out.append(f"**{cwe_id}** — Not found in local database")
+            out.append(f"See: https://cwe.mitre.org/data/definitions/{cwe_num}.html")
+
+        out.append("\n### OWASP Top 10 Mapping")
+        if matched_top10 or matched_api or matched_llm:
+            for item in matched_top10:
+                out.append(f"- **{item['id']}** — {item['name']}")
+            for item in matched_api:
+                out.append(f"- **{item['id']}** — {item['name']} (API Security)")
+            for item in matched_llm:
+                out.append(f"- **{item['id']}** — {item['name']} (LLM)")
+        else:
+            out.append("_No direct Top 10 mapping found for this CWE._")
+
+        out.append("\n### ASVS Requirements")
+        if asvs_results:
+            for row in asvs_results[:10]:
+                out.append(f"- {_fmt_asvs(row)}")
+        else:
+            out.append("_No matching ASVS requirements found._")
+
+        out.append("\n### WSTG Test Cases")
+        if wstg_results:
+            for row in wstg_results[:10]:
+                out.append(f"- {_fmt_wstg(row)}")
+        else:
+            out.append("_No matching WSTG test cases found._")
+
+        out.append("\n### Attack Patterns (CAPEC)")
+        if capec_results:
+            for row in capec_results:
+                sev = row.get("severity") or "N/A"
+                out.append(f"- **{row['capec_id']}** — {row['name']} (Severity: {sev})")
+        else:
+            out.append("_No CAPEC attack patterns found for this CWE._")
+
+        out.append("\n### Remediation Guidance")
+        if cs_results:
+            for r in cs_results[:10]:
+                out.append(f"- {r.get('name', '?')}")
+        else:
+            out.append("_No matching cheat sheets found._")
+
+        asvs_chapters: set[str] = set()
+        for row in asvs_results:
+            ch = row.get("chapter_id", "")
+            if ch:
+                asvs_chapters.add(ch)
+            else:
+                req_id = row.get("req_id", "")
+                if req_id and "." in req_id:
+                    asvs_chapters.add(req_id.split(".")[0])
+
+        out.append("\n### Compliance Impact")
+        if asvs_chapters:
+            pci: list[str] = []
+            iso: list[str] = []
+            nist: list[str] = []
+            for ch in sorted(asvs_chapters):
+                ch_map = _ASVS_COMPLIANCE_MAP.get(ch, {})
+                pci.extend(ch_map.get("pci-dss", []))
+                iso.extend(ch_map.get("iso27001", []))
+                nist.extend(ch_map.get("nist-800-53", []))
+            pci = list(dict.fromkeys(pci))
+            iso = list(dict.fromkeys(iso))
+            nist = list(dict.fromkeys(nist))
+            if pci:
+                out.append(f"- **PCI-DSS 4.0:** {', '.join(pci)}")
+            if iso:
+                out.append(f"- **ISO 27001:2022:** {', '.join(iso)}")
+            if nist:
+                out.append(f"- **NIST 800-53:** {', '.join(nist)}")
+            if not pci and not iso and not nist:
+                out.append("_No compliance mapping available for matched ASVS chapters._")
+        else:
+            out.append("_No ASVS chapter matched — compliance mapping not available._")
+
+        return "\n".join(out)
+
+    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, idempotentHint=True))
+    async def get_attack_pattern(
+        id: Annotated[str | None, Field(description="CAPEC ID, e.g. 'CAPEC-62' or '62'")] = None,
+        cwe: Annotated[str | None, Field(description="Find attack patterns for a CWE, e.g. 'CWE-79'")] = None,
+        query: Annotated[str | None, Field(description="Free-text search across attack patterns", max_length=500)] = None,
+        limit: Annotated[int, Field(ge=1, le=50)] = 10,
+    ) -> str:
+        """Look up MITRE CAPEC attack patterns by ID, related CWE, or free-text search."""
+        db_path = await index_mgr.ensure_index()
+
+        if id is not None:
+            capec_id = id.strip().upper()
+            if not capec_id.startswith("CAPEC-"):
+                capec_id = f"CAPEC-{capec_id}"
+            record = db.get_by_id(db_path, "capec", "capec_id", capec_id)
+            if record is None:
+                return f"Attack pattern '{id}' not found. Use get_attack_pattern with query to search."
+            return _fmt_capec_detail(record, db_path)
+
+        if cwe is not None:
+            cwe_upper = cwe.strip().upper()
+            if not cwe_upper.startswith("CWE-"):
+                cwe_upper = f"CWE-{cwe_upper}"
+            cwe_upper = cwe_upper.replace('%', '').replace('_', '')
+            conn = db.get_connection(db_path)
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM capec WHERE ',' || related_cwes || ',' LIKE ? LIMIT ?",
+                    (f"%,{cwe_upper},%", limit),
+                ).fetchall()
+                results = [dict(r) for r in rows]
+            finally:
+                conn.close()
+            if not results:
+                return f"No attack patterns found related to {cwe_upper}."
+            lines = [f"## Attack Patterns for {cwe_upper} ({len(results)} found)\n"]
+            for row in results:
+                sev = row.get("severity") or "N/A"
+                lines.append(f"- **{row['capec_id']}** — {row['name']} (Severity: {sev})")
+            return "\n".join(lines)
+
+        if query is not None:
+            try:
+                results, total = db.search_fts(db_path, "capec", query, limit=limit)
+            except Exception as exc:
+                raise ToolError(f"CAPEC search failed: {exc}") from exc
+            if not results:
+                return f"No attack patterns found for '{query}'."
+            lines = [f"## CAPEC Search: {query} ({total} results)\n"]
+            for row in results:
+                sev = row.get("severity") or "N/A"
+                lines.append(f"- **{row['capec_id']}** — {row['name']} (Severity: {sev})")
+            return "\n".join(lines)
+
+        raise ToolError("Provide at least one of: id, cwe, or query")
